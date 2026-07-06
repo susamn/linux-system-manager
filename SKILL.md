@@ -115,12 +115,60 @@ python3 test_sys_manager.py
 ### Writing New Tests
 If you modify `linux-system-manager.sh` or `install.py`:
 1. Open `test_sys_manager.py`.
-2. Add a new test method to `TestSysManager` or `TestInstaller` utilizing standard `unittest.mock` strategies (patching filesystem, process executions, and environment inputs).
-3. Confirm all tests pass locally and in the GitHub Actions runner environment before committing changes.
+2. Add a new test method to `TestSysManager` or `TestInstaller` utilizing standard `unittest.mock` mockings.
+3. Confirm all tests pass locally and in the GitHub Actions runner environment.
+
+> [!NOTE]
+> Because `linux-system-manager.sh` uses a `.sh` file extension to look like standard shell utilities but contains Python code, standard Python `import` statements or `importlib` specs will fail. You must load and compile the source dynamically in test setups:
+> ```python
+> import types
+> sys_manager = types.ModuleType("sys_manager")
+> sys_manager.__file__ = "linux-system-manager.sh"
+> with open(sys_manager.__file__, 'r') as f:
+>     source_code = f.read()
+> code_obj = compile(source_code, sys_manager.__file__, 'exec')
+> exec(code_obj, sys_manager.__dict__)
+> ```
 
 ---
 
-## 7. Developer Guardrails
+## 7. Standalone Commit & Submodule Workflow
+
+The `linux-system-manager` repository is a standalone Git repository embedded inside a parent configuration/dotfiles repository. To maintain history cleanly:
+
+### Commit Format
+Follow the **Conventional Commits** standard (without any AI branding or credit signatures). Keep commits small, logical, and focused:
+- `feat`: Adding new scripts, features, or installer functionality (e.g. `feat: add Arch Linux boot check scripts`).
+- `feat(services)`: Changes scoped to personal/system services.
+- `chore`: Renaming files, updating `.gitignore` or metadata configurations.
+- `test`: Adding or updating test cases.
+- `docs`: Updating `README.md` or `SKILL.md`.
+
+### Propagating Submodule Commits
+When committing updates:
+1. **Commit locally in `linux-system-manager/`**:
+   ```bash
+   cd linux-system-manager/
+   git add <modified-files>
+   git commit -m "feat/chore/test: description"
+   ```
+2. **Commit the gitlink pointer in the parent repository**:
+   ```bash
+   cd ..
+   git add linux-system-manager
+   git commit -m "chore(sys-manager): update submodule reference"
+   ```
+
+---
+
+## 8. Developer Guardrails
 - **Zero Third-Party Packages:** Never import packages outside the Python standard library in `linux-system-manager.sh`, `install.py`, or `test_sys_manager.py`.
 - **Stateless Operation:** Never write user settings or operation logs inside the project source tree. Use `~/.local/state/` or `/var/log/` for distro logs.
 - **Fail Gracefully:** Never allow python `subprocess` exceptions to crash the main menu loop. Always catch execution failures and log them to standard error.
+- **Self-Escalation Pattern**: Any distro-specific script requiring root must self-escalate on launch:
+  ```bash
+  if [[ $EUID -ne 0 ]]; then
+      echo "This script requires root privileges. Re-running with sudo..."
+      exec sudo "$0" "$@"
+  fi
+  ```
