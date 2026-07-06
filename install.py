@@ -127,7 +127,7 @@ def main():
     print()
     
     print(f"{GREEN}✓ Global Installation Sequence Completed.{NC}")
-    print(f"You can now run system manager with: python3 {os.path.join(SCRIPT_DIR, 'sys-manager.py')}")
+    print(f"You can now run system manager with: {os.path.join(SCRIPT_DIR, 'linux-system-manager.sh')}")
 
 if __name__ == '__main__':
     main()

@@ -9,10 +9,16 @@ from unittest.mock import patch, mock_open, MagicMock
 # Import the orchestrator and installer modules dynamically since their filenames contain hyphens or clash
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Import sys-manager.py
-sys_manager_spec = importlib.util.spec_from_file_location("sys_manager", os.path.join(SCRIPT_DIR, "sys-manager.py"))
-sys_manager = importlib.util.module_from_spec(sys_manager_spec)
-sys_manager_spec.loader.exec_module(sys_manager)
+import types
+
+# Import linux-system-manager.sh (manually compile since importlib doesn't auto-load .sh files as python)
+sys_manager = types.ModuleType("sys_manager")
+sys_manager.__file__ = os.path.join(SCRIPT_DIR, "linux-system-manager.sh")
+with open(sys_manager.__file__, 'r') as f:
+    source_code = f.read()
+code_obj = compile(source_code, sys_manager.__file__, 'exec')
+exec(code_obj, sys_manager.__dict__)
+sys.modules["sys_manager"] = sys_manager
 
 # Import install.py
 install_spec = importlib.util.spec_from_file_location("install", os.path.join(SCRIPT_DIR, "install.py"))

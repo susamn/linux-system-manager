@@ -1,29 +1,29 @@
 ---
-name: sys-manager-maintainer
-description: Maintain, enhance, and extend the system-agnostic sys-manager toolset. Use this skill when adding new features, modifying distro menus, replicating functionality across all distros, managing systemd services, or running tests.
+name: linux-system-manager-maintainer
+description: Maintain, enhance, and extend the system-agnostic linux-system-manager toolset. Use this skill when adding new features, modifying distro menus, replicating functionality across all distros, managing systemd services, or running tests.
 version: 1.1.0
 triggers:
-  - "how to add a new feature to sys-manager"
+  - "how to add a new feature to linux-system-manager"
   - "add distro-agnostic capability"
   - "replicate functionality to all distros"
-  - "manage sys-manager project"
+  - "manage linux-system-manager project"
 intent: system
 config_dir: ./config
 created_at: 2026-07-06
 updated_at: 2026-07-06
 ---
 
-# Sys-Manager Project Maintainer & Developer Guide
+# Linux-System-Manager Project Maintainer & Developer Guide
 
-This local skill governs the design, maintenance, and expansion of the `sys-manager` project.
+This local skill governs the design, maintenance, and expansion of the `linux-system-manager` project.
 
 ---
 
 ## 1. Project Philosophy & Core Architecture
 
-The `sys-manager` toolset is a **stateless, configuration-driven system management pipeline**. It is designed around complete isolation between presentation and implementation:
+The `linux-system-manager` toolset is a **stateless, configuration-driven system management pipeline**. It is designed around complete isolation between presentation and implementation:
 
-- **Parent Orchestrator (`sys-manager.py`):** Distro-blind. Handles terminal clearance, interactive menus, OS detection (`/etc/os-release`), dynamic JSON menu parsing, and process execution context.
+- **Parent Orchestrator (`linux-system-manager.sh`):** Distro-blind. Handles terminal clearance, interactive menus, OS detection (`/etc/os-release`), dynamic JSON menu parsing, and process execution context.
 - **Distribution Modules (`distros/<distro_id>/`):** Self-contained. Declare their capabilities in `menu.json` and implement execution logic in distro-native scripts/binaries.
 - **Privilege Boundary:** The parent orchestrator and main menu run as a regular user. Distro-specific scripts must call `sudo` internally if they perform privileged actions (like checking systemd configs or writing backups).
 
@@ -32,10 +32,11 @@ The `sys-manager` toolset is a **stateless, configuration-driven system manageme
 ## 2. Directory Layout Reference
 
 ```
-sys-manager/
-├── sys-manager.py               # Main menu runner (distro-agnostic)
+linux-system-manager/
+├── linux-system-manager.sh      # Main menu runner (distro-agnostic)
 ├── install.py                   # Service and hooks installer (distro-agnostic)
 ├── test_sys_manager.py          # Unit test suite
+├── SKILL.md                     # Local maintainer & developer guide
 ├── services/                    # Custom systemd services source directory
 │   └── sys-manager-cleanup.service
 ├── distros/                     # Distro-specific logic folders
@@ -112,7 +113,7 @@ python3 test_sys_manager.py
 ```
 
 ### Writing New Tests
-If you modify `sys-manager.py` or `install.py`:
+If you modify `linux-system-manager.sh` or `install.py`:
 1. Open `test_sys_manager.py`.
 2. Add a new test method to `TestSysManager` or `TestInstaller` utilizing standard `unittest.mock` strategies (patching filesystem, process executions, and environment inputs).
 3. Confirm all tests pass locally and in the GitHub Actions runner environment before committing changes.
@@ -120,6 +121,6 @@ If you modify `sys-manager.py` or `install.py`:
 ---
 
 ## 7. Developer Guardrails
-- **Zero Third-Party Packages:** Never import packages outside the Python standard library in `sys-manager.py`, `install.py`, or `test_sys_manager.py`.
+- **Zero Third-Party Packages:** Never import packages outside the Python standard library in `linux-system-manager.sh`, `install.py`, or `test_sys_manager.py`.
 - **Stateless Operation:** Never write user settings or operation logs inside the project source tree. Use `~/.local/state/` or `/var/log/` for distro logs.
 - **Fail Gracefully:** Never allow python `subprocess` exceptions to crash the main menu loop. Always catch execution failures and log them to standard error.
