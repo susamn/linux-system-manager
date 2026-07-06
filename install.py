@@ -55,13 +55,13 @@ def install_systemd_services():
         print(f"{YELLOW}ℹ No 'services' directory found. Skipping systemd service installation.{NC}")
         return
         
-    service_files = [f for f in os.listdir(services_src_dir) if f.endswith('.service')]
+    service_files = [f for f in os.listdir(services_src_dir) if f.endswith('.service') or f.endswith('.timer')]
     
     if not service_files:
-        print(f"{YELLOW}ℹ No systemd services found in {services_src_dir}.{NC}")
+        print(f"{YELLOW}ℹ No systemd services or timers found in {services_src_dir}.{NC}")
         return
         
-    print(f"{BLUE}⚙ Installing custom systemd services...{NC}")
+    print(f"{BLUE}⚙ Installing custom systemd services & timers...{NC}")
     for file in service_files:
         src_path = os.path.join(services_src_dir, file)
         dest_path = os.path.join(dest_dir, file)

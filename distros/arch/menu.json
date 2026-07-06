@@ -149,6 +149,30 @@
           "args": ["--recent-changes"]
         }
       ]
+    },
+    {
+      "id": "5",
+      "title": "Personal Services & Timers",
+      "items": [
+        {
+          "key": "1",
+          "label": "Active Personal Services",
+          "exec": "services_scripts.sh",
+          "args": ["--active-personal"]
+        },
+        {
+          "key": "2",
+          "label": "Failed Personal Services",
+          "exec": "services_scripts.sh",
+          "args": ["--failed-personal"]
+        },
+        {
+          "key": "3",
+          "label": "Manage Personal Services (Start/Stop/Toggle)",
+          "exec": "services_scripts.sh",
+          "args": ["--manage-personal"]
+        }
+      ]
     }
   ]
 }

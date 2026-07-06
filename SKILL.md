@@ -82,16 +82,16 @@ Write the script for each distro.
 chmod +x distros/*/analyze_disk.sh
 ```
 
----
+## 4. Workflow: Adding & Managing Custom (Personal) Systemd Services
 
-## 4. Workflow: Adding Custom Systemd Services
+To deploy and manage custom background utility services (e.g., a backup cleanup timer or sync daemon) and segregate them from standard system services:
 
-To deploy a new background utility service (e.g., a system stats daemon or auto-update scheduler) to all target machines:
-
-1. Write the service unit file under `services/` (e.g., `services/sys-stats.service`).
-2. Run `install.py` as root (or let it self-escalate via sudo).
-3. The installer automatically copies all `services/*.service` files to `/etc/systemd/system/` and runs `systemctl daemon-reload`.
-4. Define hooks/triggers within each distro's `install_hooks.sh` to start/enable the services if desired.
+1. **Place unit files in `services/`**: Write the service or timer unit files under the `services/` directory (e.g., `services/sys-manager-cleanup.service` and `services/sys-manager-cleanup.timer`).
+2. **Installation**: Run `install.py` (which escalates via `sudo` automatically). The installer copies all `services/*.{service,timer}` files to `/etc/systemd/system/` and runs `systemctl daemon-reload`.
+3. **Menu Segregation**:
+   - Standard system services are monitored and inspected under **Section 4 (Services & Scripts)**.
+   - Local/personal services from this repository are segregated and monitored under **Section 5 (Personal Services & Timers)**.
+   - Distro-specific logic (e.g. `services_scripts.sh`) dynamically detects these services by scanning the `services/` directory in the repository relative to its runtime path, and checks their status, failures, and toggling states via `systemctl`.
 
 ---
 
