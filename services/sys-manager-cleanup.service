@@ -1,0 +1,8 @@
+[Unit]
+Description=Clean up old boot backups and rotate timeline logs
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/find /home/*/.boot-backups -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+User=root
