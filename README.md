@@ -1,4 +1,4 @@
-# sys-manager
+# linux-system-manager
 
 A distro-agnostic, configuration-driven CLI system manager and package operations timeline monitor for Linux. 
 
