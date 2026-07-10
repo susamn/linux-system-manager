@@ -58,16 +58,30 @@ class TestSysManager(unittest.TestCase):
 
     @patch('os.path.exists')
     @patch('os.path.isdir')
+    def test_detect_distro_ubuntu_fallback_to_debian(self, mock_isdir, mock_exists):
+        mock_exists.return_value = True
+        # ID is ubuntu, but we only have 'debian' folder in our mock
+        mock_isdir.side_effect = lambda path: 'debian' in path
+        
+        os_release_content = 'ID=ubuntu\nNAME="Ubuntu"\nID_LIKE="debian"'
+        
+        with patch('builtins.open', mock_open(read_data=os_release_content)):
+            distro_id, distro_name = sys_manager.detect_distro()
+            self.assertEqual(distro_id, 'debian')
+            self.assertEqual(distro_name, 'Ubuntu')
+
+    @patch('os.path.exists')
+    @patch('os.path.isdir')
     def test_detect_distro_unsupported(self, mock_isdir, mock_exists):
         mock_exists.return_value = True
         mock_isdir.return_value = False # No folders exist
         
-        os_release_content = 'ID=ubuntu\nNAME="Ubuntu"'
+        os_release_content = 'ID=gentoo\nNAME="Gentoo"'
         
         with patch('builtins.open', mock_open(read_data=os_release_content)):
             distro_id, distro_name = sys_manager.detect_distro()
             self.assertIsNone(distro_id)
-            self.assertEqual(distro_name, 'Ubuntu')
+            self.assertEqual(distro_name, 'Gentoo')
 
     @patch('os.path.exists')
     def test_load_menu_success(self, mock_exists):
