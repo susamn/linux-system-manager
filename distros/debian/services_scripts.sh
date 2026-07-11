@@ -64,7 +64,7 @@ case "$action" in
         echo -e "${CYAN}Custom scripts in /usr/local/bin:${NC}"
         echo ""
         if [[ -d /usr/local/bin ]]; then
-            ls -lh /usr/local/bin | grep -E "debian-.*\.sh$" || echo "  No debian-*.sh scripts found"
+            ls -lh /usr/local/bin | grep -E "arch-.*\.sh$" || echo "  No arch-*.sh scripts found"
         fi
 
         echo ""
@@ -88,7 +88,7 @@ case "$action" in
     --recent-changes)
         echo -e "${CYAN}Recently modified systemd units:${NC}"
         echo ""
-        find /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system -type f -name "*.service" -mtime -30 2>/dev/null | while read -r file; do
+        find /etc/systemd/system /usr/lib/systemd/system -type f -name "*.service" -mtime -30 2>/dev/null | while read -r file; do
             mtime=$(stat -c %y "$file" | cut -d'.' -f1)
             echo -e "  ${YELLOW}$mtime${NC}  $(basename "$file")"
         done | head -20
@@ -99,11 +99,34 @@ case "$action" in
         for file in ../../services/*.{service,timer}; do
             [[ -f "$file" ]] || continue
             name=$(basename "$file")
-            state=$(systemctl is-active "$name" 2>/dev/null || echo "inactive")
-            if [[ "$state" == "active" ]]; then
-                echo -e "  ${GREEN}●${NC} $name (${GREEN}active/running${NC})"
+            if [[ "$name" == *@.service || "$name" == *@.timer ]]; then
+                template_base="${name%.*}"
+                instances=()
+                while read -r inst; do
+                    if [[ -n "$inst" && "$inst" != "$name" ]]; then
+                        instances+=("$inst")
+                    fi
+                done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+                
+                if [[ ${#instances[@]} -gt 0 ]]; then
+                    for inst in "${instances[@]}"; do
+                        state=$(systemctl is-active "$inst" 2>/dev/null || echo "inactive")
+                        if [[ "$state" == "active" ]]; then
+                            echo -e "  ${GREEN}●${NC} $inst (${GREEN}active/running${NC})"
+                        else
+                            echo -e "  ${RED}○${NC} $inst (${RED}inactive/stopped${NC})"
+                        fi
+                    done
+                else
+                    echo -e "  ${BLUE}ℹ${NC} $name (No active instances)"
+                fi
             else
-                echo -e "  ${RED}○${NC} $name (${RED}inactive/stopped${NC})"
+                state=$(systemctl is-active "$name" 2>/dev/null || echo "inactive")
+                if [[ "$state" == "active" ]]; then
+                    echo -e "  ${GREEN}●${NC} $name (${GREEN}active/running${NC})"
+                else
+                    echo -e "  ${RED}○${NC} $name (${RED}inactive/stopped${NC})"
+                fi
             fi
         done
         ;;
@@ -114,13 +137,29 @@ case "$action" in
         for file in ../../services/*.{service,timer}; do
             [[ -f "$file" ]] || continue
             name=$(basename "$file")
-            state=$(systemctl show -p ActiveState --value "$name" 2>/dev/null || echo "")
-            substate=$(systemctl show -p SubState --value "$name" 2>/dev/null || echo "")
-            if [[ "$state" == "failed" ]] || [[ "$substate" == "failed" ]]; then
-                echo -e "  ${RED}✗ $name is failed${NC}"
-                systemctl status "$name" --no-pager | sed 's/^/    /'
-                echo ""
-                ((failed_count++))
+            if [[ "$name" == *@.service || "$name" == *@.timer ]]; then
+                template_base="${name%.*}"
+                while read -r inst; do
+                    if [[ -n "$inst" && "$inst" != "$name" ]]; then
+                        state=$(systemctl show -p ActiveState --value "$inst" 2>/dev/null || echo "")
+                        substate=$(systemctl show -p SubState --value "$inst" 2>/dev/null || echo "")
+                        if [[ "$state" == "failed" ]] || [[ "$substate" == "failed" ]]; then
+                            echo -e "  ${RED}✗ $inst is failed${NC}"
+                            systemctl status "$inst" --no-pager | sed 's/^/    /'
+                            echo ""
+                            ((failed_count++))
+                        fi
+                    fi
+                done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+            else
+                state=$(systemctl show -p ActiveState --value "$name" 2>/dev/null || echo "")
+                substate=$(systemctl show -p SubState --value "$name" 2>/dev/null || echo "")
+                if [[ "$state" == "failed" ]] || [[ "$substate" == "failed" ]]; then
+                    echo -e "  ${RED}✗ $name is failed${NC}"
+                    systemctl status "$name" --no-pager | sed 's/^/    /'
+                    echo ""
+                    ((failed_count++))
+                fi
             fi
         done
         if [[ $failed_count -eq 0 ]]; then
@@ -151,20 +190,81 @@ case "$action" in
         echo -e "  ${RED}0${NC}) Cancel"
         echo ""
         read -p "Select unit (1-$((i-1))): " choice
-
+        
         if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -ge "$i" ]]; then
             echo "Cancelled or invalid selection."
             exit 0
         fi
-
+        
         selected_unit="${units[$((choice-1))]}"
         echo ""
+        
+        # If template, resolve instance
+        if [[ "$selected_unit" == *@.service || "$selected_unit" == *@.timer ]]; then
+            template_base="${selected_unit%.*}"
+            echo "Scanning for instantiated units of $selected_unit..."
+            
+            # Find active or configured instances
+            instances=()
+            while read -r line; do
+                if [[ -n "$line" ]]; then
+                    instances+=("$line")
+                fi
+            done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+            
+            # Check enabled/disabled ones too
+            while read -r line; do
+                if [[ -n "$line" && "$line" == *.* ]]; then
+                    exists=false
+                    for inst in "${instances[@]:-}"; do
+                        if [[ "$inst" == "$line" ]]; then
+                            exists=true
+                            break
+                        fi
+                    done
+                    if [[ "$exists" = false ]]; then
+                        instances+=("$line")
+                    fi
+                fi
+            done < <(systemctl list-unit-files --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+
+            # Filter base template
+            filtered_instances=()
+            for inst in "${instances[@]:-}"; do
+                if [[ "$inst" != "$selected_unit" && "$inst" != "${template_base}.service" && "$inst" != "${template_base}.timer" ]]; then
+                    filtered_instances+=("$inst")
+                fi
+            done
+            
+            if [[ ${#filtered_instances[@]} -eq 0 ]]; then
+                echo -e "${YELLOW}No instances of $selected_unit are currently configured or running on the system.${NC}"
+                echo -e "You can configure them from Section 6 (Cloud Sync Management)."
+                exit 0
+            fi
+            
+            echo "Select an instance to manage:"
+            inst_idx=1
+            for inst in "${filtered_instances[@]}"; do
+                echo -e "  ${GREEN}$inst_idx${NC}) $inst"
+                ((inst_idx++))
+            done
+            echo -e "  ${RED}0${NC}) Cancel"
+            echo ""
+            read -p "Select instance (1-$((inst_idx-1))): " inst_choice
+            if [[ ! "$inst_choice" =~ ^[0-9]+$ ]] || [[ "$inst_choice" -lt 1 ]] || [[ "$inst_choice" -ge "$inst_idx" ]]; then
+                echo "Cancelled."
+                exit 0
+            fi
+            selected_unit="${filtered_instances[$((inst_choice-1))]}"
+            echo ""
+        fi
+
         echo -e "Selected unit: ${CYAN}$selected_unit${NC}"
         echo "1) Start & Enable"
         echo "2) Stop & Disable"
         echo "3) View status logs"
         read -p "Select action: " act
-
+        
         case "$act" in
             1)
                 echo "Enabling and starting $selected_unit..."

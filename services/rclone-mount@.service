@@ -1,0 +1,14 @@
+[Unit]
+Description=Rclone Mount Service for profile %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rclone-mount.sh %i
+Restart=on-failure
+RestartSec=10s
+User=@USER@
+
+[Install]
+WantedBy=default.target

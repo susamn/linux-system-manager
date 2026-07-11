@@ -173,6 +173,37 @@
           "args": ["--manage-personal"]
         }
       ]
+    },
+    {
+      "id": "6",
+      "title": "Cloud Sync Management",
+      "items": [
+        {
+          "key": "1",
+          "label": "List Sync Profiles & Status",
+          "exec": "cloud_sync.sh",
+          "args": ["--list"]
+        },
+        {
+          "key": "2",
+          "label": "Create New Sync Profile",
+          "exec": "cloud_sync.sh",
+          "args": ["--create"]
+        },
+        {
+          "key": "3",
+          "label": "Edit/Manage Sync Profile",
+          "exec": "cloud_sync.sh",
+          "args": ["--manage"]
+        },
+        {
+          "key": "4",
+          "label": "View Sync Logs",
+          "exec": "cloud_sync.sh",
+          "args": ["--logs"]
+        }
+      ]
     }
   ]
 }
+
