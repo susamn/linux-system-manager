@@ -93,6 +93,10 @@ To deploy and manage custom background utility services (e.g., a backup cleanup 
    - Standard system services are monitored and inspected under **Section 4 (Services & Scripts)**.
    - Local/personal services from this repository are segregated and monitored under **Section 5 (Personal Services & Timers)**.
    - Distro-specific logic (e.g. `services_scripts.sh`) dynamically detects these services by scanning the `services/` directory in the repository relative to its runtime path, and checks their status, failures, and toggling states via `systemctl`.
+4. **Template Units Support (e.g., `rclone-sync@.service`, `rclone-mount@.service`)**:
+   - Systemd templates in `services/` require instance names (e.g. `rclone-mount@obsidian-mount.service`) to run.
+   - **Crucial Rule:** In template unit files, always use the raw `%i` (lowercase) specifier in `ExecStart` and descriptions instead of `%I` (uppercase). Systemd path-unescapes `%I`, translating dashes (`-`) to slashes (`/`), which will break configuration file resolution if profile names contain dashes.
+   - When managing templates under Section 5 (`services_scripts.sh`), the script automatically queries systemd for active or configured instances of that template (using `systemctl list-units` and `systemctl list-unit-files`) and lets the user choose which instance to manage.
 
 ---
 
