@@ -373,42 +373,203 @@ def show_sockets():
     print_table(headers, rows)
     log_audit("Viewed active sockets", "ss -tupan", True, f"Listed {len(rows)} sockets")
 
+def analyze_firewall_ruleset(stdout, tool_name):
+    policies = {"INPUT": "UNKNOWN", "OUTPUT": "UNKNOWN", "FORWARD": "UNKNOWN"}
+    allowed_ports = []
+    blocked_ports = []
+    has_loopback_allow = False
+    has_conntrack_allow = False
+    raw_rules_count = len(stdout.splitlines())
+    
+    if tool_name == "nft":
+        current_chain = None
+        for line in stdout.splitlines():
+            line_strip = line.strip()
+            if "chain " in line_strip and "{" in line_strip:
+                parts = line_strip.split()
+                if len(parts) >= 2:
+                    current_chain = parts[1].upper()
+            elif line_strip == "}":
+                current_chain = None
+                
+            if "policy " in line_strip:
+                policy_match = re.search(r'hook\s+(\w+)\s+.*policy\s+(\w+);', line_strip)
+                if policy_match:
+                    hook_name = policy_match.group(1).upper()
+                    policy_val = policy_match.group(2).upper()
+                    if hook_name in policies:
+                        policies[hook_name] = policy_val
+                else:
+                    for chain_key in ["INPUT", "OUTPUT", "FORWARD"]:
+                        if chain_key.lower() in line_strip:
+                            m = re.search(r'policy\s+(\w+);', line_strip)
+                            if m:
+                                policies[chain_key] = m.group(1).upper()
+
+            if current_chain == "INPUT" or ("chain input" in line_strip.lower()):
+                if "accept" in line_strip:
+                    if "lo" in line_strip:
+                        has_loopback_allow = True
+                    if "ct state" in line_strip or "established" in line_strip:
+                        has_conntrack_allow = True
+                    port_match = re.search(r'(tcp|udp)\s+dport\s+(\d+)', line_strip)
+                    if port_match:
+                        proto = port_match.group(1).upper()
+                        port = port_match.group(2)
+                        allowed_ports.append({"port": port, "proto": proto, "line": line_strip})
+                    else:
+                        ports_match = re.search(r'(tcp|udp)\s+dport\s+\{\s*([^}]+)\s*\}', line_strip)
+                        if ports_match:
+                            proto = ports_match.group(1).upper()
+                            ports = [p.strip() for p in ports_match.group(2).split(",")]
+                            for port in ports:
+                                allowed_ports.append({"port": port, "proto": proto, "line": line_strip})
+                elif "drop" in line_strip or "reject" in line_strip:
+                    port_match = re.search(r'(tcp|udp)\s+dport\s+(\d+)', line_strip)
+                    if port_match:
+                        proto = port_match.group(1).upper()
+                        port = port_match.group(2)
+                        blocked_ports.append({"port": port, "proto": proto, "line": line_strip})
+                        
+    elif tool_name in ["iptables", "ip6tables"]:
+        for line in stdout.splitlines():
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if parts[0] == "-P" and len(parts) >= 3:
+                chain = parts[1].upper()
+                policy = parts[2].upper()
+                if chain in policies:
+                    policies[chain] = policy
+            elif parts[0] == "-A" and len(parts) >= 2:
+                chain = parts[1].upper()
+                if chain == "INPUT":
+                    if "-i" in parts:
+                        idx = parts.index("-i")
+                        if idx + 1 < len(parts) and parts[idx + 1] == "lo":
+                            if "-j" in parts:
+                                j_idx = parts.index("-j")
+                                if j_idx + 1 < len(parts) and parts[j_idx + 1] == "ACCEPT":
+                                    has_loopback_allow = True
+                    if "state" in parts or "ctstate" in parts:
+                        if "ESTABLISHED" in line or "RELATED" in line:
+                            has_conntrack_allow = True
+                    if "-j" in parts:
+                        j_idx = parts.index("-j")
+                        action = parts[j_idx + 1].upper()
+                        port = None
+                        proto = "TCP"
+                        if "-p" in parts:
+                            p_idx = parts.index("-p")
+                            proto = parts[p_idx + 1].upper()
+                        for p in parts:
+                            if p.startswith("--dport"):
+                                d_idx = parts.index(p)
+                                port = parts[d_idx + 1]
+                                break
+                        if port:
+                            rule_info = {"port": port, "proto": proto, "line": line}
+                            if action == "ACCEPT":
+                                allowed_ports.append(rule_info)
+                            elif action in ["DROP", "REJECT"]:
+                                blocked_ports.append(rule_info)
+                                
+    return {
+        "policies": policies,
+        "allowed_ports": allowed_ports,
+        "blocked_ports": blocked_ports,
+        "has_loopback_allow": has_loopback_allow,
+        "has_conntrack_allow": has_conntrack_allow,
+        "raw_rules_count": raw_rules_count
+    }
+
+def show_firewall_summary(summary, tool_name):
+    print(f"\n{BLUE}🛡️  Default Chain Policies:{NC}")
+    for chain, val in summary["policies"].items():
+        color = GREEN if val == "ACCEPT" else RED
+        security_hint = f" ({GREEN}Secure{NC})" if chain in ["INPUT", "FORWARD"] and val in ["DROP", "REJECT"] else ""
+        print(f"   ├── {chain:<8} : {color}{val}{NC}{security_hint}")
+        
+    print(f"\n{BLUE}🔌  Key Inbound Rules:{NC}")
+    loopback_status = f"{GREEN}ALLOWED{NC}" if summary["has_loopback_allow"] else f"{RED}BLOCKED/MISSING{NC} (Warning: local services may fail)"
+    print(f"   ├── Loopback Interface : {loopback_status}")
+    
+    conntrack_status = f"{GREEN}ALLOWED{NC} (Stateful)" if summary["has_conntrack_allow"] else f"{YELLOW}MISSING{NC} (Stateful tracker not detected)"
+    print(f"   ├── Active Connections : {conntrack_status}")
+    
+    if summary["allowed_ports"]:
+        print(f"   │")
+        for idx, rule in enumerate(summary["allowed_ports"]):
+            is_last = (idx == len(summary["allowed_ports"]) - 1)
+            connector = "└──" if is_last else "├──"
+            clean_line = rule["line"].strip()
+            clean_line = re.sub(r'counter\s+packets\s+\d+\s+bytes\s+\d+\s+', '', clean_line)
+            print(f"   {connector} {GREEN}[ALLOW]{NC} Port {YELLOW}{rule['port']}{NC} ({rule['proto']}) ──> {clean_line}")
+    else:
+        print(f"   └── No explicit port allow rules parsed.")
+        
+    if summary["blocked_ports"]:
+        print(f"\n{RED}🚫  Explicit Inbound Blocks:{NC}")
+        for idx, rule in enumerate(summary["blocked_ports"]):
+            is_last = (idx == len(summary["blocked_ports"]) - 1)
+            connector = "└──" if is_last else "├──"
+            print(f"   {connector} {RED}[BLOCK]{NC} Port {YELLOW}{rule['port']}{NC} ({rule['proto']}) ──> {rule['line'].strip()}")
+            
+    print(f"\n{BLUE}📊  Ruleset Statistics:{NC}")
+    print(f"   └── Total active configuration lines parsed: {summary['raw_rules_count']}")
+    print()
+
 def show_firewall():
+    raw_output = ""
+    tool_name = ""
+    
     if check_tool("nft"):
+        tool_name = "nft"
         print_header("Firewall Ruleset (nftables)")
         try:
             res = subprocess.run(["nft", "list", "ruleset"], capture_output=True, text=True, timeout=10)
             if res.returncode == 0:
-                print(res.stdout)
-                log_audit("Viewed firewall ruleset", "nft list ruleset", True, f"Captured nftables ruleset ({len(res.stdout.splitlines())} lines)")
+                raw_output = res.stdout
             else:
                 print(f"{RED}Error running nft list ruleset: {res.stderr}{NC}")
         except Exception as e:
             print(f"{RED}Error: {e}{NC}")
     elif check_tool("iptables"):
+        tool_name = "iptables"
         print_header("Firewall Ruleset (iptables)")
         try:
             res = subprocess.run(["iptables", "-S"], capture_output=True, text=True, timeout=10)
             if res.returncode == 0:
-                print(res.stdout)
-                log_audit("Viewed firewall ruleset", "iptables -S", True, f"Captured iptables ruleset ({len(res.stdout.splitlines())} lines)")
+                raw_output = res.stdout
+                if check_tool("ip6tables"):
+                    res6 = subprocess.run(["ip6tables", "-S"], capture_output=True, text=True, timeout=10)
+                    if res6.returncode == 0:
+                        raw_output += "\n# IPv6 Ruleset:\n" + res6.stdout
             else:
                 print(f"{RED}Error running iptables -S: {res.stderr}{NC}")
         except Exception as e:
             print(f"{RED}Error: {e}{NC}")
-        if check_tool("ip6tables"):
-            print("\n")
-            print_header("Firewall Ruleset (ip6tables)")
-            try:
-                res = subprocess.run(["ip6tables", "-S"], capture_output=True, text=True, timeout=10)
-                if res.returncode == 0:
-                    print(res.stdout)
-                else:
-                    print(f"{RED}Error running ip6tables -S: {res.stderr}{NC}")
-            except Exception as e:
-                print(f"{RED}Error: {e}{NC}")
     else:
         print(f"{RED}No firewall management tool (nft/iptables) found.{NC}")
+        return
+
+    if raw_output:
+        summary = analyze_firewall_ruleset(raw_output, tool_name)
+        show_firewall_summary(summary, tool_name)
+        log_audit("Audited firewall ruleset summary", f"{tool_name} analysis", True, f"Parsed {summary['raw_rules_count']} rules")
+        
+        choice = input(f"{CYAN}Would you like to view the raw ruleset dump? (y/N):{NC} ").strip().lower()
+        if choice in ['y', 'yes']:
+            clear_screen()
+            print_header(f"Raw Firewall Ruleset ({tool_name})")
+            if check_tool("less"):
+                try:
+                    less_proc = subprocess.Popen(["less", "-R", "-F", "-X"], stdin=subprocess.PIPE, text=True)
+                    less_proc.communicate(input=raw_output)
+                except Exception as e:
+                    print(raw_output)
+            else:
+                print(raw_output)
 
 def read_proc_net_dev():
     ifaces = {}
