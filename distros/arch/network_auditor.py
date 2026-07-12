@@ -1057,9 +1057,142 @@ def show_avahi_discovery():
     except Exception as e:
         print(f"{RED}Error running avahi-browse: {e}{NC}")
 
+def get_default_gateway():
+    try:
+        res = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and res.stdout:
+            parts = res.stdout.strip().split()
+            if "via" in parts:
+                idx = parts.index("via")
+                return parts[idx + 1]
+    except:
+        pass
+    return None
 
+def get_local_ip_and_interface():
+    try:
+        res = subprocess.run(["ip", "route", "get", "1.1.1.1"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and res.stdout:
+            parts = res.stdout.strip().split()
+            if "src" in parts:
+                src_idx = parts.index("src")
+                dev_idx = parts.index("dev")
+                return parts[src_idx + 1], parts[dev_idx + 1]
+    except:
+        pass
+    return "127.0.0.1", "lo"
 
+def show_network_graph():
+    print_header("Terminal Network Topology Graph")
+    print("Gathering network topology...")
+    
+    local_ip, iface = get_local_ip_and_interface()
+    gateway_ip = get_default_gateway()
+    
+    # Get active hosts from ARP neighbor cache
+    arp_neighs = []
+    try:
+        res = subprocess.run(["ip", "neigh", "show", "dev", iface], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 5 and "FAILED" not in line:
+                    ip = parts[0]
+                    arp_neighs.append(ip)
+    except:
+        pass
+        
+    # Get local subnet info
+    subnet_range = "Unknown Subnet"
+    try:
+        res = subprocess.run(["ip", "route", "show", "dev", iface], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if "proto kernel" in line or "scope link" in line:
+                    parts = line.split()
+                    if parts:
+                        subnet_range = parts[0]
+                        break
+    except:
+        pass
+        
+    # Retrieve mDNS names via avahi if available
+    names_map = {}
+    services_map = {}
+    if check_tool("avahi-browse"):
+        try:
+            res = subprocess.run(["avahi-browse", "-d", "local", "-a", "-r", "-t", "-p"], capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                services = parse_avahi_output(res.stdout)
+                for s in services:
+                    ip = s["ip"]
+                    names_map[ip] = s["hostname"]
+                    if ip not in services_map:
+                        services_map[ip] = []
+                    svc_info = f"{s['name']} (Port {s['port']})"
+                    if svc_info not in services_map[ip]:
+                        services_map[ip].append(svc_info)
+        except:
+            pass
 
+    # Unique list of other nodes
+    nodes = set(arp_neighs)
+    if gateway_ip:
+        nodes.discard(gateway_ip)
+    nodes.discard(local_ip)
+    
+    # Render topology graph
+    graph_lines = []
+    graph_lines.append(f"\n   {CYAN}[ Internet ]{NC}")
+    graph_lines.append("        │")
+    
+    if gateway_ip:
+        gateway_name = names_map.get(gateway_ip, "default-gateway")
+        graph_lines.append(f"  {RED}[ Gateway ]{NC} ─────── {YELLOW}{gateway_ip}{NC} ({gateway_name})")
+    else:
+        graph_lines.append(f"  {RED}[ Gateway ]{NC} ─────── Unknown Gateway")
+        
+    graph_lines.append("        │")
+    graph_lines.append(f"  ──────┴─────────────────────────── {GREEN}Subnet: {subnet_range} ({iface}){NC}")
+    graph_lines.append("        │                         │")
+    graph_lines.append(f"  {GREEN}[ Local Host ]{NC}                  {CYAN}[ Active Subnet Nodes ]{NC}")
+    graph_lines.append(f"  ({local_ip})")
+    
+    sorted_nodes = sorted(list(nodes))
+    if not sorted_nodes:
+        graph_lines.append("                                  (No other active nodes detected)")
+    else:
+        for idx, node in enumerate(sorted_nodes):
+            is_last = (idx == len(sorted_nodes) - 1)
+            connector = "└─" if is_last else "├─"
+            node_name = names_map.get(node, "unknown")
+            graph_lines.append(f"                                  {connector} {YELLOW}{node}{NC} ({node_name})")
+            
+            if node in services_map:
+                services_list = services_map[node]
+                for s_idx, svc in enumerate(services_list):
+                    indent = " " if is_last else "│"
+                    sub_connector = "└──" if (s_idx == len(services_list) - 1) else "├──"
+                    graph_lines.append(f"                                  {indent}   {sub_connector} {MAGENTA}{svc}{NC}")
+    graph_lines.append("\n")
+    
+    if check_tool("less"):
+        try:
+            less_proc = subprocess.Popen(
+                ["less", "-R", "-F", "-X"],
+                stdin=subprocess.PIPE,
+                text=True
+            )
+            less_proc.communicate(input="\n".join(graph_lines))
+        except Exception as e:
+            print(f"{RED}Failed to run less: {e}. Printing graph directly:{NC}\n")
+            for line in graph_lines:
+                print(line)
+    else:
+        for line in graph_lines:
+            print(line)
+            
+    log_audit("Displayed network topology graph", "ip neigh & avahi-browse graph", True, f"Mapped {len(nodes)} active nodes")
 
 def main():
     escalate_privileges()
@@ -1085,10 +1218,11 @@ def main():
         opt4 = f"Real-Time Interface Telemetry" if telemetry_ok else f"Real-Time Interface Telemetry {RED}[DISABLED: /proc missing]{NC}"
         opt5 = f"Real-Time Process Telemetry (BCC)" if bcc_ok else f"Real-Time Process Telemetry (BCC) {YELLOW}[DISABLED: 'tcptop' missing (fallback available)]{NC}"
         opt6 = f"Subnet Host Discovery (Nmap)" if nmap_ok else f"Subnet Host Discovery (Nmap) {RED}[DISABLED: 'nmap' missing]{NC}"
-        opt7 = f"mDNS / Avahi Service Discovery" if avahi_ok else f"mDNS / Avahi Service Discovery {RED}[DISABLED: 'avahi-browse' missing]{NC}"
-        opt8 = f"Take Atomic Snapshot of Network State"
-        opt9 = f"Compare Slices / Differential Analysis"
-        opt10 = f"Generate Security Audit Report"
+        opt7 = f"mDNS / Avahi Service Topology" if avahi_ok else f"mDNS / Avahi Service Topology {RED}[DISABLED: 'avahi-browse' missing]{NC}"
+        opt8 = f"Terminal Network Topology Graph" if ip_ok else f"Terminal Network Topology Graph {RED}[DISABLED: 'ip' missing]{NC}"
+        opt9 = f"Take Atomic Snapshot of Network State"
+        opt10 = f"Compare Slices / Differential Analysis"
+        opt11 = f"Generate Security Audit Report"
         
         print(f"  {MAGENTA}1{NC})  {opt1}")
         print(f"  {MAGENTA}2{NC})  {opt2}")
@@ -1100,10 +1234,11 @@ def main():
         print(f"  {MAGENTA}8{NC})  {opt8}")
         print(f"  {MAGENTA}9{NC})  {opt9}")
         print(f"  {MAGENTA}10{NC}) {opt10}")
+        print(f"  {MAGENTA}11{NC}) {opt11}")
         print(f"  {RED}0{NC})  Return to Main Menu")
         print()
         
-        choice = input(f"{CYAN}Select option (0-10):{NC} ").strip()
+        choice = input(f"{CYAN}Select option (0-11):{NC} ").strip()
         
         if choice == '0':
             break
@@ -1156,14 +1291,22 @@ def main():
             show_avahi_discovery()
             pause()
         elif choice == '8':
+            if not ip_ok:
+                print(f"{RED}Error: Option disabled because 'ip' is missing.{NC}")
+                pause()
+                continue
             clear_screen()
-            take_snapshot()
+            show_network_graph()
             pause()
         elif choice == '9':
             clear_screen()
-            compare_snapshots()
+            take_snapshot()
             pause()
         elif choice == '10':
+            clear_screen()
+            compare_snapshots()
+            pause()
+        elif choice == '11':
             clear_screen()
             run_security_report()
             pause()
@@ -1173,3 +1316,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
