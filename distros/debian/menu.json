@@ -203,6 +203,17 @@
           "args": ["--logs"]
         }
       ]
+    },
+    {
+      "id": "7",
+      "title": "Network Discovery & Mapping",
+      "items": [
+        {
+          "key": "a",
+          "label": "Open Network Auditor Toolset",
+          "exec": "network_auditor.py"
+        }
+      ]
     }
   ]
 }
