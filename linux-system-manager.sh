@@ -15,6 +15,11 @@ NC = '\033[0m'
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Injectable so distro detection can be exercised against a fixture instead of
+# whatever host the tests happen to run on.
+OS_RELEASE_PATH = os.environ.get('OS_RELEASE_PATH', '/etc/os-release')
+
+
 def clear_screen():
     os.system('clear')
 
@@ -38,11 +43,12 @@ def pause():
     input("Press ENTER to continue...")
 
 def detect_distro():
-    if not os.path.exists('/etc/os-release'):
-        raise FileNotFoundError("Could not find /etc/os-release to detect distro.")
-        
+    if not os.path.exists(OS_RELEASE_PATH):
+        raise FileNotFoundError(
+            f"Could not find {OS_RELEASE_PATH} to detect distro.")
+
     info = {}
-    with open('/etc/os-release') as f:
+    with open(OS_RELEASE_PATH) as f:
         for line in f:
             if '=' in line:
                 k, v = line.strip().split('=', 1)

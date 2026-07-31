@@ -84,8 +84,18 @@ case "$action" in
         # whose installer writes debian-*.sh.
         script_prefix="$(basename "$SCRIPT_DIR")"
         if [[ -d /usr/local/bin ]]; then
-            ls -lh /usr/local/bin | grep -E "${script_prefix}-.*\.sh$" \
-                || echo "  No ${script_prefix}-*.sh scripts found"
+            found_any=false
+            while IFS= read -r -d '' installed; do
+                printf '  %s  %6s  %s\n' \
+                    "$(stat -c '%A' "$installed")" \
+                    "$(du -h "$installed" | cut -f1)" \
+                    "$(basename "$installed")"
+                found_any=true
+            done < <(find /usr/local/bin -maxdepth 1 -type f \
+                          -name "${script_prefix}-*.sh" -print0 2>/dev/null | sort -z)
+            if [[ "$found_any" == false ]]; then
+                echo "  No ${script_prefix}-*.sh scripts found"
+            fi
         fi
 
         echo ""

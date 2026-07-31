@@ -152,6 +152,9 @@ create_backup() {
         blkid > "$BACKUP_PATH/blkid-output.txt" 2>/dev/null || true
     else
         lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT > "$BACKUP_PATH/partition-layout.txt"
+        # shellcheck disable=SC2024  # sudo elevates the *read*; the redirect is
+        # intentionally performed as the invoking user so the backup file stays
+        # user-owned. `| sudo tee` would make it root-owned inside their home.
         sudo blkid > "$BACKUP_PATH/blkid-output.txt" 2>/dev/null || \
             log_warn "Could not get full partition info (requires sudo)"
     fi
@@ -163,6 +166,9 @@ create_backup() {
         if [[ $EUID -eq 0 ]]; then
             efibootmgr -v > "$BACKUP_PATH/efi-boot-entries.txt" 2>/dev/null || true
         else
+            # shellcheck disable=SC2024  # sudo elevates the *read*; the redirect is
+            # intentionally performed as the invoking user so the backup file stays
+            # user-owned. `| sudo tee` would make it root-owned inside their home.
             sudo efibootmgr -v > "$BACKUP_PATH/efi-boot-entries.txt" 2>/dev/null || \
                 log_warn "Could not read EFI entries (requires sudo)"
         fi
