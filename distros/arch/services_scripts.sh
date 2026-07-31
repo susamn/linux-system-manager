@@ -53,7 +53,7 @@ collect_personal_units() {
         while IFS= read -r -d '' file; do
             local name
             name=$(basename "$file")
-            if [[ ! " ${seen[*]:-} " =~ " ${name} " ]]; then
+            if [[ " ${seen[*]:-} " != *" ${name} "* ]]; then
                 printf '%s\0' "$name"
             fi
         done < <(find "$SERVICES_DIR" -maxdepth 1 -type f \( -name '*.service' -o -name '*.timer' \) -print0 2>/dev/null)
