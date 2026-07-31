@@ -20,6 +20,24 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICES_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)/services"
 
+# Extract unit names from `systemctl list-units` output.
+#
+# systemctl prefixes lines with a status marker (U+25CF) for units needing
+# attention, so a bare `awk '{print $1}'` returns the bullet instead of the unit
+# name -- producing phantom entries like "● (inactive/stopped)" in the listing.
+# --plain suppresses the marker; this filter additionally skips any leading token
+# that is not a unit name, so the parse cannot silently yield garbage.
+lsm_unit_names() {
+    awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /\.(service|timer|socket|mount|target|path)$/) {
+                print $i
+                break
+            }
+        }
+    }'
+}
+
 # Collect personal unit files once, NUL-safe, so paths containing spaces survive.
 collect_personal_units() {
     if [[ ! -d "$SERVICES_DIR" ]]; then
@@ -136,7 +154,7 @@ case "$action" in
                     if [[ -n "$inst" && "$inst" != "$name" ]]; then
                         instances+=("$inst")
                     fi
-                done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+                done < <(systemctl list-units --all --no-legend --plain --no-pager "${template_base}*" 2>/dev/null | lsm_unit_names || true)
                 
                 if [[ ${#instances[@]} -gt 0 ]]; then
                     for inst in "${instances[@]}"; do
@@ -179,7 +197,7 @@ case "$action" in
                             failed_count=$((failed_count + 1))
                         fi
                     fi
-                done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+                done < <(systemctl list-units --all --no-legend --plain --no-pager "${template_base}*" 2>/dev/null | lsm_unit_names || true)
             else
                 state=$(systemctl show -p ActiveState --value "$name" 2>/dev/null || echo "")
                 substate=$(systemctl show -p SubState --value "$name" 2>/dev/null || echo "")
@@ -238,7 +256,7 @@ case "$action" in
                 if [[ -n "$line" ]]; then
                     instances+=("$line")
                 fi
-            done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+            done < <(systemctl list-units --all --no-legend --plain --no-pager "${template_base}*" 2>/dev/null | lsm_unit_names || true)
             
             # Check enabled/disabled ones too
             while read -r line; do
@@ -254,7 +272,7 @@ case "$action" in
                         instances+=("$line")
                     fi
                 fi
-            done < <(systemctl list-unit-files --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
+            done < <(systemctl list-unit-files --no-legend --plain --no-pager "${template_base}*" 2>/dev/null | lsm_unit_names || true)
 
             # Filter base template
             filtered_instances=()

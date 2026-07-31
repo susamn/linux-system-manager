@@ -243,22 +243,39 @@ def install_rclone_sync_helper():
                 except Exception as e:
                     print(f"  {RED}✗ Failed to setup systemd units for {profile_name}: {e}{NC}")
             else:
-                # Disable service or timer if it was running/enabled
-                try:
-                    if sync_type == 'mount':
-                        subprocess.run(['systemctl', 'disable', '--now', f'rclone-mount@{profile_name}.service'], capture_output=True)
-                    else:
-                        subprocess.run(['systemctl', 'disable', '--now', f'rclone-sync@{profile_name}.timer'], capture_output=True)
-                except Exception:
-                    pass
-                
+                # Deliberately does NOT disable or stop anything.
+                #
+                # These checks probe a *network* backend with a short timeout. A
+                # transient failure previously ran `systemctl disable --now`,
+                # which stopped healthy mounts and removed them from boot -- so a
+                # momentary blip during an unrelated re-install silently tore down
+                # working sync. An installer may add and report; it may not
+                # dismantle state it did not create in this run.
                 reasons = []
                 if not backend_ok: reasons.append("Backend missing")
                 if not local_ok: reasons.append("Local directory missing/cannot create")
                 if not remote_ok: reasons.append("Remote path inaccessible")
-                
-                unit_type = "Mount" if sync_type == 'mount' else "Timer"
-                print(f"  {YELLOW}⚠ Profile '{profile_name}' NOT activated (Reasons: {', '.join(reasons)}). {unit_type} disabled.{NC}")
+
+                unit = (f'rclone-mount@{profile_name}.service' if sync_type == 'mount'
+                        else f'rclone-sync@{profile_name}.timer')
+
+                currently_active = False
+                try:
+                    probe = subprocess.run(['systemctl', 'is-active', unit],
+                                           capture_output=True, text=True, timeout=5)
+                    currently_active = probe.stdout.strip() == 'active'
+                except Exception:
+                    pass
+
+                print(f"  {YELLOW}⚠ Profile '{profile_name}' not activated "
+                      f"(Reasons: {', '.join(reasons)}).{NC}")
+                if currently_active:
+                    print(f"    {BLUE}ℹ {unit} is already running and was left "
+                          f"untouched. These checks are network-dependent, so this "
+                          f"is most likely a transient failure.{NC}")
+                else:
+                    print(f"    Fix the above, then enable manually:")
+                    print(f"      sudo systemctl enable --now {unit}")
 
 
 
