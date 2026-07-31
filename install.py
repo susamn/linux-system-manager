@@ -13,6 +13,7 @@ CYAN = '\033[0;36m'
 NC = '\033[0m'
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SERVICES_SRC_DIR = os.path.join(SCRIPT_DIR, 'services')
 
 def check_root():
     if os.geteuid() != 0:
@@ -49,22 +50,21 @@ def detect_distro():
 
 def install_systemd_services():
     real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'root'))
-    services_src_dir = os.path.join(SCRIPT_DIR, 'services')
     dest_dir = '/etc/systemd/system'
-    
-    if not os.path.isdir(services_src_dir):
+
+    if not os.path.isdir(SERVICES_SRC_DIR):
         print(f"{YELLOW}ℹ No 'services' directory found. Skipping systemd service installation.{NC}")
         return
-        
-    service_files = [f for f in os.listdir(services_src_dir) if f.endswith('.service') or f.endswith('.timer')]
-    
+
+    service_files = [f for f in os.listdir(SERVICES_SRC_DIR) if f.endswith('.service') or f.endswith('.timer')]
+
     if not service_files:
-        print(f"{YELLOW}ℹ No systemd services or timers found in {services_src_dir}.{NC}")
+        print(f"{YELLOW}ℹ No systemd services or timers found in {SERVICES_SRC_DIR}.{NC}")
         return
-        
+
     print(f"{BLUE}⚙ Installing custom systemd services & timers...{NC}")
     for file in service_files:
-        src_path = os.path.join(services_src_dir, file)
+        src_path = os.path.join(SERVICES_SRC_DIR, file)
         dest_path = os.path.join(dest_dir, file)
         
         try:
@@ -119,12 +119,13 @@ def install_rclone_sync_helper():
     # 1. Copy sync and mount runner scripts
     runners = [
         ('rclone-sync.sh', '/usr/local/bin/rclone-sync.sh'),
-        ('rclone-mount.sh', '/usr/local/bin/rclone-mount.sh')
+        ('rclone-mount.sh', '/usr/local/bin/rclone-mount.sh'),
+        ('cleanup-backups.sh', '/usr/local/bin/sys-manager-cleanup-backups.sh'),
     ]
-    
+
     print(f"{BLUE}⚙ Installing Rclone Sync and Mount helper utilities...{NC}")
     for src_file, dest_path in runners:
-        src_path = os.path.join(services_src_dir, src_file)
+        src_path = os.path.join(SERVICES_SRC_DIR, src_file)
         if os.path.exists(src_path):
             try:
                 shutil.copy2(src_path, dest_path)
@@ -213,6 +214,16 @@ def install_rclone_sync_helper():
             # Activate only if all checks pass
             if backend_ok and local_ok and remote_ok:
                 try:
+                    # Pin each instance to the user that owns its profile. The
+                    # template's @USER@ was substituted once with the installing
+                    # user, so without this every profile runs as that user.
+                    unit = (f'rclone-mount@{profile_name}.service' if sync_type == 'mount'
+                            else f'rclone-sync@{profile_name}.service')
+                    user_override_dir = f'/etc/systemd/system/{unit}.d'
+                    os.makedirs(user_override_dir, exist_ok=True)
+                    with open(os.path.join(user_override_dir, 'user.conf'), 'w') as f:
+                        f.write(f"[Service]\nUser={user}\n")
+
                     if sync_type == 'mount':
                         # Enable mount service directly (runs continuously, no timer!)
                         subprocess.run(['systemctl', 'enable', f'rclone-mount@{profile_name}.service'], check=True)
@@ -267,14 +278,29 @@ def main():
         
     print(f"{BLUE}Detected Distribution:{NC} {GREEN}{distro_name} ({distro_id}){NC}")
     print()
-    
-    install_systemd_services()
-    install_rclone_sync_helper()
-    print()
-    
-    run_distro_installer(distro_id)
-    print()
-    
+
+    # Each phase is independent: a failure in one must not prevent the others from
+    # running, otherwise a single bug silently skips hook registration entirely.
+    phases = [
+        ("systemd services", install_systemd_services, ()),
+        ("rclone helpers", install_rclone_sync_helper, ()),
+        ("distro hooks", run_distro_installer, (distro_id,)),
+    ]
+
+    failed = []
+    for name, func, args in phases:
+        try:
+            func(*args)
+        except Exception as e:
+            failed.append(name)
+            print(f"  {RED}✗ Phase '{name}' failed: {type(e).__name__}: {e}{NC}")
+        print()
+
+    if failed:
+        print(f"{RED}✗ Installation completed with errors in: {', '.join(failed)}{NC}")
+        print(f"Re-run after fixing, or install the failed phase manually.")
+        sys.exit(1)
+
     print(f"{GREEN}✓ Global Installation Sequence Completed.{NC}")
     print(f"You can now run system manager with: {os.path.join(SCRIPT_DIR, 'linux-system-manager.sh')}")
 

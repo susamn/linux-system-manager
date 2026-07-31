@@ -83,7 +83,7 @@ while IFS= read -r line; do
         all_updates="${all_updates}
 ${formatted}"
     fi
-    ((total_count++))
+    total_count=$((total_count + 1))
 done <<< "$all_updates_raw"
 
 echo -e "${CYAN}═══ Total Pending Updates: $total_count packages ═══${NC}"

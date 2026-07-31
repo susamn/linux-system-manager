@@ -7,7 +7,16 @@ set -euo pipefail
 # for emergency recovery purposes
 
 # --- Configuration ---
-BACKUP_DIR="${HOME}/.boot-backups"
+# Resolve the invoking user's home from passwd, not $HOME. Under sudo $HOME is
+# /root, so backups created via an escalated path landed in /root/.boot-backups
+# while "List Backups" run normally looked in the user's home and saw nothing.
+_backup_user="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo root)}}"
+_backup_home="$(getent passwd "$_backup_user" 2>/dev/null | cut -d: -f6)"
+if [[ -z "$_backup_home" || ! -d "$_backup_home" ]]; then
+    _backup_home="${HOME:-/root}"
+fi
+
+BACKUP_DIR="${BOOT_BACKUP_DIR:-${_backup_home}/.boot-backups}"
 BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
 BACKUP_PATH="${BACKUP_DIR}/boot-backup-${BACKUP_DATE}"
 
@@ -339,7 +348,7 @@ list_backups() {
         echo "   Path: $backup_path"
         echo ""
 
-        ((count++))
+        count=$((count + 1))
     done
 
     echo "Total backups: $((count - 1))"
@@ -374,7 +383,7 @@ restore_backup() {
         local backup_name=$(basename "$backup_path")
         local date_created=$(stat -c %y "$backup_path" | cut -d' ' -f1,2 | cut -d'.' -f1)
         echo "  ${count}. $backup_name (${date_created})"
-        ((count++))
+        count=$((count + 1))
     done
 
     echo ""

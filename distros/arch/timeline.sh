@@ -7,14 +7,27 @@ set -euo pipefail
 # Called by pacman hook after package operations
 
 # --- Configuration ---
-# Determine the actual user's home (not root's home when run via sudo)
+# Determine the actual user's home (not root's home when run via sudo).
+# All fallbacks are guarded: package-manager hooks run with a minimal environment
+# where USER is frequently unset, and a bare ${USER} aborts under `set -u`.
 if [[ -n "${SUDO_USER:-}" ]]; then
     ACTUAL_USER="${SUDO_USER}"
-else
+elif [[ -n "${USER:-}" ]]; then
     ACTUAL_USER="${USER}"
+elif [[ -n "${LOGNAME:-}" ]]; then
+    ACTUAL_USER="${LOGNAME}"
+else
+    ACTUAL_USER="$(id -un 2>/dev/null || echo root)"
 fi
 
-TIMELINE_DIR="/home/${ACTUAL_USER}/.local/state/arch-package-state"
+# Resolve the home directory from passwd rather than assuming /home/<user>:
+# root lives in /root, and system/LDAP accounts are routinely elsewhere.
+ACTUAL_HOME="$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)"
+if [[ -z "$ACTUAL_HOME" || ! -d "$ACTUAL_HOME" ]]; then
+    ACTUAL_HOME="${HOME:-/root}"
+fi
+
+TIMELINE_DIR="${ACTUAL_HOME}/.local/state/arch-package-state"
 TIMELINE_FILE="${TIMELINE_DIR}/timeline.log"
 
 # --- Colors ---
@@ -235,9 +248,27 @@ search_timeline() {
     echo -e "${CYAN}Results for: $search_term${NC}"
     echo ""
 
-    grep -i "$search_term" "$TIMELINE_FILE" | while IFS='|' read -r timestamp operation package version old_ver; do
+    # grep exits 1 on no match, which aborts the script under `set -e`. Capture the
+    # result first so "no matches" is a normal outcome rather than a silent failure.
+    # -F treats the term literally, so a package name containing regex metacharacters
+    # (e.g. "gcc++") searches for what the user actually typed.
+    local matches
+    matches="$(grep -iF -- "$search_term" "$TIMELINE_FILE" || true)"
+
+    if [[ -z "$matches" ]]; then
+        echo -e "  ${YELLOW}No matches found for '${search_term}'.${NC}"
+        return 0
+    fi
+
+    local match_count=0
+    while IFS='|' read -r timestamp operation package version old_ver; do
+        [[ -z "$timestamp" ]] && continue
         echo -e "  $timestamp  ${YELLOW}$operation${NC}  $package  ($version)"
-    done
+        match_count=$((match_count + 1))
+    done <<< "$matches"
+
+    echo ""
+    echo -e "${GREEN}${match_count} match(es).${NC}"
 }
 
 # --- Main Execution ---
