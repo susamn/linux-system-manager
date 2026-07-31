@@ -25,4 +25,4 @@ TimeoutStopSec=30s
 User=@USER@
 
 [Install]
-WantedBy=default.target
+WantedBy=default.target personal-services.target
