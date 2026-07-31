@@ -75,7 +75,7 @@ if [[ "$has_timeshift" == "true" ]]; then
                 if [[ "$line" =~ ^\> ]]; then
                     snapshot_info=$(echo "$line" | sed 's/^> //')
                     echo -e "${CYAN}$counter.${NC} $snapshot_info"
-                    ((counter++))
+                    counter=$((counter + 1))
                 fi
             done <<< "$snapshot_output"
 

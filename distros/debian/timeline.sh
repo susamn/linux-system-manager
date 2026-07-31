@@ -6,15 +6,27 @@ set -euo pipefail
 # Called by APT DPkg::Post-Invoke hook after package operations
 
 # --- Configuration ---
-# Determine the actual user's home (not root's home when run via sudo)
+# Determine the actual user's home (not root's home when run via sudo).
+# All fallbacks are guarded: APT hooks run with a minimal environment where USER
+# is frequently unset, and a bare ${USER} aborts under `set -u`.
 if [[ -n "${SUDO_USER:-}" ]]; then
     ACTUAL_USER="${SUDO_USER}"
+elif [[ -n "${USER:-}" ]]; then
+    ACTUAL_USER="${USER}"
+elif [[ -n "${LOGNAME:-}" ]]; then
+    ACTUAL_USER="${LOGNAME}"
 else
-    # Fallback to the first non-root user in /home if possible, or root
-    ACTUAL_USER=$(ls /home | head -1 || echo "root")
+    ACTUAL_USER="$(id -un 2>/dev/null || echo root)"
 fi
 
-TIMELINE_DIR="/home/${ACTUAL_USER}/.local/state/debian-package-state"
+# Resolve the home directory from passwd rather than assuming /home/<user>:
+# root lives in /root, and system/LDAP accounts are routinely elsewhere.
+ACTUAL_HOME="$(getent passwd "$ACTUAL_USER" 2>/dev/null | cut -d: -f6)"
+if [[ -z "$ACTUAL_HOME" || ! -d "$ACTUAL_HOME" ]]; then
+    ACTUAL_HOME="${HOME:-/root}"
+fi
+
+TIMELINE_DIR="${ACTUAL_HOME}/.local/state/debian-package-state"
 TIMELINE_FILE="${TIMELINE_DIR}/timeline.log"
 STATE_FILE="${TIMELINE_DIR}/last_processed_line"
 
@@ -94,8 +106,10 @@ log_package_operation() {
     local boot_changed=false
 
     if [[ $current_lines -gt $last_line ]]; then
-        # Read new lines starting from last_line + 1
-        tail -n +$((last_line + 1)) /var/log/dpkg.log | while read -r line; do
+        # Process substitution, not a pipe: `tail | while` runs the loop body in a
+        # subshell, so boot_changed set below would be discarded and the post-upgrade
+        # boot safety check would never fire after a kernel or grub change.
+        while read -r line; do
             # Format in dpkg.log: YYYY-MM-DD HH:MM:SS ACTION PKGNAME:ARCH OLDVER NEWVER
             # Examples:
             # 2026-07-10 17:07:05 install python3-software-properties:all <none> 0.99.22.9
@@ -146,8 +160,8 @@ log_package_operation() {
                     echo "${log_timestamp}|${operation}|${pkg_clean}|${version}|${old_version}" >> "$TIMELINE_FILE"
                     ;;
             esac
-        done
-        
+        done < <(tail -n +$((last_line + 1)) /var/log/dpkg.log)
+
         # Save new state
         echo "$current_lines" > "$STATE_FILE"
         chown "${ACTUAL_USER}:${ACTUAL_USER}" "$STATE_FILE" 2>/dev/null || true
@@ -284,9 +298,27 @@ search_timeline() {
     echo -e "${CYAN}Results for: $search_term${NC}"
     echo ""
 
-    grep -i "$search_term" "$TIMELINE_FILE" | while IFS='|' read -r timestamp operation package version old_ver; do
+    # grep exits 1 on no match, which aborts the script under `set -e`. Capture the
+    # result first so "no matches" is a normal outcome rather than a silent failure.
+    # -F treats the term literally, so a package name containing regex metacharacters
+    # (e.g. "g++") searches for what the user actually typed.
+    local matches
+    matches="$(grep -iF -- "$search_term" "$TIMELINE_FILE" || true)"
+
+    if [[ -z "$matches" ]]; then
+        echo -e "  ${YELLOW}No matches found for '${search_term}'.${NC}"
+        return 0
+    fi
+
+    local match_count=0
+    while IFS='|' read -r timestamp operation package version old_ver; do
+        [[ -z "$timestamp" ]] && continue
         echo -e "  $timestamp  ${YELLOW}$operation${NC}  $package  ($version)"
-    done
+        match_count=$((match_count + 1))
+    done <<< "$matches"
+
+    echo ""
+    echo -e "${GREEN}${match_count} match(es).${NC}"
 }
 
 # --- Main Execution ---

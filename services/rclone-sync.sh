@@ -25,10 +25,12 @@ RCLONE_OPTS=""
 # shellcheck disable=SC1090
 source "$CONF_FILE"
 
-# Validation
-if [[ -z "$REMOTE" || -z "$REMOTE_PATH" || -z "$LOCAL_PATH" || -z "$SYNC_TYPE" ]]; then
+# Validation.
+# REMOTE_PATH is deliberately NOT required: cloud_sync.sh offers "leave blank for
+# root", and an empty value is the valid way to address the root of a remote.
+if [[ -z "$REMOTE" || -z "$LOCAL_PATH" || -z "$SYNC_TYPE" ]]; then
     echo "Error: Missing required variables in $CONF_FILE." >&2
-    echo "Required: REMOTE, REMOTE_PATH, LOCAL_PATH, SYNC_TYPE" >&2
+    echo "Required: REMOTE, LOCAL_PATH, SYNC_TYPE" >&2
     exit 1
 fi
 

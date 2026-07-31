@@ -17,37 +17,60 @@ if [[ $# -gt 0 ]]; then
 fi
 
 # Detect actual user if running via sudo
-REAL_USER="${SUDO_USER:-$USER}"
+REAL_USER="${SUDO_USER:-${USER:-$(id -un)}}"
+
+# Resolve a user's home from passwd. $HOME must NOT be used for this: under sudo
+# it is /root while REAL_USER is the invoking user, so every profile lookup silently
+# searched root's config directory and reported "no profiles configured".
+user_home() {
+    local target="$1"
+    local resolved
+    resolved="$(getent passwd "$target" 2>/dev/null | cut -d: -f6)"
+    if [[ -n "$resolved" ]]; then
+        echo "$resolved"
+    elif [[ "$target" == "${USER:-}" && -n "${HOME:-}" ]]; then
+        # Not in passwd (container, NSS gap): only $HOME can speak for the current
+        # user. Guessing /home/<user> would be wrong on exactly the systems where
+        # passwd lookup already failed.
+        echo "$HOME"
+    fi
+}
+
+PROFILE_SUBDIR=".config/rclone-sync-profiles"
+
+# Search order: the invoking user's home first, then root's. Deduplicated so that
+# running as root does not list every profile twice.
+PROFILE_DIRS=()
+_seen_home=""
+for _h in "$(user_home "$REAL_USER")" "$(user_home root)"; do
+    [[ -n "$_h" && "$_h" != "$_seen_home" ]] && PROFILE_DIRS+=("$_h/$PROFILE_SUBDIR")
+    _seen_home="$_h"
+done
+unset _h _seen_home
 
 # Helper function to find profile config file and its user
 find_profile_conf() {
     local profile="$1"
-    if [[ -f "$HOME/.config/rclone-sync-profiles/${profile}.conf" ]]; then
-        echo "$HOME/.config/rclone-sync-profiles/${profile}.conf"
-        return 0
-    fi
-    if [[ -f "/root/.config/rclone-sync-profiles/${profile}.conf" ]]; then
-        echo "/root/.config/rclone-sync-profiles/${profile}.conf"
-        return 0
-    fi
+    local dir
+    for dir in "${PROFILE_DIRS[@]}"; do
+        if [[ -f "$dir/${profile}.conf" ]]; then
+            echo "$dir/${profile}.conf"
+            return 0
+        fi
+    done
     return 1
 }
 
-# Helper function to scan all profiles across all users
+# Emit every profile config path, NUL-terminated so paths containing spaces survive.
+# The previous version echoed a space-joined string, which split any such path.
 scan_all_profiles() {
-    local files=()
-    if [[ -d "$HOME/.config/rclone-sync-profiles" ]]; then
-        for f in "$HOME/.config/rclone-sync-profiles"/*.conf; do
-            [[ -f "$f" ]] && files+=("$f")
+    local dir f
+    for dir in "${PROFILE_DIRS[@]}"; do
+        [[ -d "$dir" ]] || continue
+        for f in "$dir"/*.conf; do
+            [[ -f "$f" ]] && printf '%s\0' "$f"
         done
-    fi
-    if [[ "$REAL_USER" != "root" && -d "/root/.config/rclone-sync-profiles" ]]; then
-        for f in "/root/.config/rclone-sync-profiles"/*.conf; do
-            [[ -f "$f" ]] && files+=("$f")
-        done
-    fi
-    # Print space-separated file list
-    echo "${files[@]:-}"
+    done
 }
 
 # Ensure systemd templates and runner scripts are deployed and up-to-date
@@ -100,10 +123,38 @@ ensure_templates_installed() {
     echo -e "  ${GREEN}✓ Templates and runner scripts are up to date.${NC}"
 }
 
+# Pin a single instance to the user that owns its profile.
+#
+# The @USER@ placeholder in the shared template is substituted once, at install
+# time, with whoever ran the installer. Every profile would otherwise run as that
+# user regardless of its own USER= field -- reading the wrong ~/.config/rclone and
+# writing files with the wrong ownership. A per-instance drop-in overrides it.
+write_service_user_override() {
+    local unit="$1"      # e.g. rclone-sync@gdrive.service
+    local run_user="$2"
+
+    if [[ -z "$run_user" ]]; then
+        return 0
+    fi
+    if ! id "$run_user" &>/dev/null; then
+        echo -e "  ${RED}✗ Cannot pin $unit: user '$run_user' does not exist.${NC}" >&2
+        return 1
+    fi
+
+    local override_dir="/etc/systemd/system/${unit}.d"
+    sudo mkdir -p "$override_dir"
+    sudo tee "$override_dir/user.conf" > /dev/null <<EOF
+[Service]
+User=$run_user
+EOF
+    echo -e "  ${GREEN}✓ Pinned $unit to user '$run_user'.${NC}"
+}
+
 case "$action" in
     --list)
         # Find all profile configuration files
-        IFS=' ' read -r -a files < <(scan_all_profiles)
+        files=()
+        while IFS= read -r -d '' _f; do files+=("$_f"); done < <(scan_all_profiles)
         
         if [[ ${#files[@]} -eq 0 || -z "${files[0]:-}" ]]; then
             echo -e "${YELLOW}No cloud sync/mount profiles configured yet in ~/.config/rclone-sync-profiles/ or /root/.config/rclone-sync-profiles/${NC}"
@@ -445,6 +496,8 @@ OnCalendar=$SCHEDULE
 EOF
             echo -e "  ${GREEN}✓ Configured systemd schedule override.${NC}"
 
+            write_service_user_override "rclone-sync@${PROFILE}.service" "$USER"
+
             # Reload & Enable
             echo "Enabling timer in systemd..."
             sudo systemctl daemon-reload
@@ -470,6 +523,7 @@ EOF
         else
             # Reload & Enable Mount Service
             echo "Enabling mount service in systemd..."
+            write_service_user_override "rclone-mount@${PROFILE}.service" "$USER"
             sudo systemctl daemon-reload
             sudo systemctl enable --now "rclone-mount@${PROFILE}.service"
             echo -e "  ${GREEN}✓ Enabled and started rclone-mount@${PROFILE}.service (Mounts will start on boot)${NC}"
@@ -480,7 +534,8 @@ EOF
         # Ensure systemd templates are present and up to date
         ensure_templates_installed
 
-        IFS=' ' read -r -a files < <(scan_all_profiles)
+        files=()
+        while IFS= read -r -d '' _f; do files+=("$_f"); done < <(scan_all_profiles)
         if [[ ${#files[@]} -eq 0 || -z "${files[0]:-}" ]]; then
             echo -e "${YELLOW}No cloud sync/mount profiles configured yet.${NC}"
             exit 0
@@ -650,10 +705,12 @@ EOF
                     echo "Stopping and disabling systemd units..."
                     if [[ "$SYNC_TYPE" == "mount" ]]; then
                         sudo systemctl disable --now "rclone-mount@${PROFILE}.service" 2>/dev/null || true
+                        sudo rm -rf "/etc/systemd/system/rclone-mount@${PROFILE}.service.d"
                     else
                         sudo systemctl disable --now "rclone-sync@${PROFILE}.timer" 2>/dev/null || true
                         sudo systemctl stop "rclone-sync@${PROFILE}.service" 2>/dev/null || true
                         sudo rm -rf "/etc/systemd/system/rclone-sync@${PROFILE}.timer.d"
+                        sudo rm -rf "/etc/systemd/system/rclone-sync@${PROFILE}.service.d"
                     fi
                     
                     echo "Deleting files..."
@@ -672,7 +729,8 @@ EOF
         ;;
 
     --logs)
-        IFS=' ' read -r -a files < <(scan_all_profiles)
+        files=()
+        while IFS= read -r -d '' _f; do files+=("$_f"); done < <(scan_all_profiles)
         if [[ ${#files[@]} -eq 0 || -z "${files[0]:-}" ]]; then
             echo -e "${YELLOW}No cloud sync/mount profiles configured yet.${NC}"
             exit 0

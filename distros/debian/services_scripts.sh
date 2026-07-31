@@ -13,6 +13,22 @@ if [[ $# -gt 0 ]]; then
     action="$1"
 fi
 
+# Resolve the repo's services/ directory from this script's own location rather
+# than from the caller's working directory. The menu runner happens to set cwd to
+# distros/<id>, so a relative ../../services path works from the menu and silently
+# finds nothing when the script is run directly.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICES_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)/services"
+
+# Collect personal unit files once, NUL-safe, so paths containing spaces survive.
+collect_personal_units() {
+    if [[ ! -d "$SERVICES_DIR" ]]; then
+        return 0
+    fi
+    find "$SERVICES_DIR" -maxdepth 1 -type f \
+         \( -name '*.service' -o -name '*.timer' \) -print0 2>/dev/null
+}
+
 case "$action" in
     --active)
         echo -e "${CYAN}Currently running services:${NC}"
@@ -63,8 +79,13 @@ case "$action" in
     --user-scripts)
         echo -e "${CYAN}Custom scripts in /usr/local/bin:${NC}"
         echo ""
+        # Derive the prefix from the containing distro directory: this file is shared
+        # verbatim between distros, and a hardcoded "arch-" found nothing on Debian,
+        # whose installer writes debian-*.sh.
+        script_prefix="$(basename "$SCRIPT_DIR")"
         if [[ -d /usr/local/bin ]]; then
-            ls -lh /usr/local/bin | grep -E "arch-.*\.sh$" || echo "  No arch-*.sh scripts found"
+            ls -lh /usr/local/bin | grep -E "${script_prefix}-.*\.sh$" \
+                || echo "  No ${script_prefix}-*.sh scripts found"
         fi
 
         echo ""
@@ -96,8 +117,7 @@ case "$action" in
     --active-personal)
         echo -e "${CYAN}Personal Services & Timers Status:${NC}"
         echo ""
-        for file in ../../services/*.{service,timer}; do
-            [[ -f "$file" ]] || continue
+        while IFS= read -r -d '' file; do
             name=$(basename "$file")
             if [[ "$name" == *@.service || "$name" == *@.timer ]]; then
                 template_base="${name%.*}"
@@ -128,14 +148,13 @@ case "$action" in
                     echo -e "  ${RED}○${NC} $name (${RED}inactive/stopped${NC})"
                 fi
             fi
-        done
+        done < <(collect_personal_units)
         ;;
     --failed-personal)
         echo -e "${CYAN}Failed Personal Services & Timers Check:${NC}"
         echo ""
         failed_count=0
-        for file in ../../services/*.{service,timer}; do
-            [[ -f "$file" ]] || continue
+        while IFS= read -r -d '' file; do
             name=$(basename "$file")
             if [[ "$name" == *@.service || "$name" == *@.timer ]]; then
                 template_base="${name%.*}"
@@ -147,7 +166,7 @@ case "$action" in
                             echo -e "  ${RED}✗ $inst is failed${NC}"
                             systemctl status "$inst" --no-pager | sed 's/^/    /'
                             echo ""
-                            ((failed_count++))
+                            failed_count=$((failed_count + 1))
                         fi
                     fi
                 done < <(systemctl list-units --all --no-legend --no-pager "${template_base}*" 2>/dev/null | awk '{print $1}' || true)
@@ -158,10 +177,10 @@ case "$action" in
                     echo -e "  ${RED}✗ $name is failed${NC}"
                     systemctl status "$name" --no-pager | sed 's/^/    /'
                     echo ""
-                    ((failed_count++))
+                    failed_count=$((failed_count + 1))
                 fi
             fi
-        done
+        done < <(collect_personal_units)
         if [[ $failed_count -eq 0 ]]; then
             echo -e "${GREEN}✓ No failed personal services/timers!${NC}"
         fi
@@ -170,10 +189,9 @@ case "$action" in
         echo -e "${CYAN}Manage Personal Services & Timers:${NC}"
         echo ""
         units=()
-        for file in ../../services/*.{service,timer}; do
-            [[ -f "$file" ]] || continue
-            units+=($(basename "$file"))
-        done
+        while IFS= read -r -d '' file; do
+            units+=("$(basename "$file")")
+        done < <(collect_personal_units)
 
         if [[ ${#units[@]} -eq 0 ]]; then
             echo "No personal services/timers found."
@@ -185,7 +203,7 @@ case "$action" in
         i=1
         for unit in "${units[@]}"; do
             echo -e "  ${GREEN}$i${NC}) $unit"
-            ((i++))
+            i=$((i + 1))
         done
         echo -e "  ${RED}0${NC}) Cancel"
         echo ""
@@ -246,7 +264,7 @@ case "$action" in
             inst_idx=1
             for inst in "${filtered_instances[@]}"; do
                 echo -e "  ${GREEN}$inst_idx${NC}) $inst"
-                ((inst_idx++))
+                inst_idx=$((inst_idx + 1))
             done
             echo -e "  ${RED}0${NC}) Cancel"
             echo ""

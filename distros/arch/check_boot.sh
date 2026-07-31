@@ -22,6 +22,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # --- Parse arguments ---
+# Captured before the parse loop consumes them, so the sudo re-exec in check_root
+# can replay the original invocation. Without this, --auto-fix and --quick-banner
+# are silently dropped whenever the script escalates privileges.
+ORIGINAL_ARGS=("$@")
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --auto-fix)
@@ -60,12 +65,12 @@ log_success() {
 
 log_warn() {
     echo -e "${YELLOW}⚠${NC}  $1"
-    ((WARN_COUNT++))
+    WARN_COUNT=$((WARN_COUNT + 1))
 }
 
 log_error() {
     echo -e "${RED}✗${NC} $1"
-    ((ERROR_COUNT++))
+    ERROR_COUNT=$((ERROR_COUNT + 1))
 }
 
 section_header() {
@@ -79,7 +84,7 @@ check_root() {
     section_header "Permission Check"
     if [[ $EUID -ne 0 ]]; then
         log_info "This script requires root privileges. Re-running with sudo..."
-        exec sudo "$0" "$@"
+        exec sudo -- "$0" ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
     fi
     log_success "Running as root"
     return 0
@@ -146,7 +151,7 @@ check_installed_kernels() {
     done <<< "$kernels"
 
     # Recommend keeping multiple kernels
-    local kernel_count=$(echo "$kernels" | grep -c '^' || echo "0")
+    local kernel_count=$(echo "$kernels" | grep -c '^' || true)
     if [[ "$kernel_count" =~ ^[0-9]+$ ]] && [[ $kernel_count -lt 2 ]]; then
         log_warn "Only 1 kernel installed. Consider installing linux-lts as backup"
         log_info "Install with: pacman -S linux-lts"
@@ -190,12 +195,12 @@ check_kernel_images() {
             else
                 echo "  ✗ vmlinuz exists but suspiciously small ($vmlinuz_size bytes)"
                 all_ok=false
-                ((errors_found++))
+                errors_found=$((errors_found + 1))
             fi
         else
             echo "  ✗ vmlinuz NOT found at $vmlinuz"
             all_ok=false
-            ((errors_found++))
+            errors_found=$((errors_found + 1))
         fi
 
         # Check initramfs
@@ -207,12 +212,12 @@ check_kernel_images() {
             else
                 echo "  ✗ initramfs exists but has invalid size"
                 all_ok=false
-                ((errors_found++))
+                errors_found=$((errors_found + 1))
             fi
         else
             echo "  ✗ initramfs NOT found at $initramfs"
             all_ok=false
-            ((errors_found++))
+            errors_found=$((errors_found + 1))
         fi
 
         # Check fallback
@@ -286,7 +291,7 @@ check_grub_config() {
     fi
 
     # Count available kernels in GRUB
-    local grub_kernel_count=$(grep -c "vmlinuz-linux" "$grub_cfg" || echo "0")
+    local grub_kernel_count=$(grep -c "vmlinuz-linux" "$grub_cfg" || true)
     if [[ $grub_kernel_count -eq 0 ]]; then
         log_error "No kernel entries found in GRUB config"
         if $AUTO_FIX; then
@@ -431,7 +436,7 @@ check_dkms_modules() {
         [[ -z "$kernel" ]] && continue
         if ! pacman -Qq "${kernel}-headers" &>/dev/null; then
             log_warn "Missing ${kernel}-headers (needed for DKMS)"
-            ((missing_headers_count++))
+            missing_headers_count=$((missing_headers_count + 1))
         fi
     done < <(echo "$kernels")
 
@@ -583,7 +588,7 @@ check_timeshift_snapshot() {
     fi
 
     # Check for recent snapshots
-    local snapshot_count=$(timeshift --list 2>/dev/null | grep -c "^>" || echo "0")
+    local snapshot_count=$(timeshift --list 2>/dev/null | grep -c "^>" || true)
 
     if [[ $snapshot_count -eq 0 ]]; then
         log_warn "No Timeshift snapshots found"
