@@ -348,6 +348,161 @@ class TestPrivilegeEscalation(unittest.TestCase):
                          f"unset array expansion tripped set -u: {res.stderr}")
 
 
+class TestInstallerDoesNotDestroyState(unittest.TestCase):
+    """The installer tore down healthy mounts when a network probe failed.
+
+    install.py validates each rclone profile by probing a remote with a short
+    timeout. On failure it ran `systemctl disable --now`, so a momentary blip
+    during an unrelated re-install stopped working mounts and removed them from
+    boot. Verified against a live system: three healthy mounts went to
+    failed+disabled after a routine `sudo ./install.py`.
+    """
+
+    def test_no_disable_now_anywhere_in_installer(self):
+        with open(os.path.join(SCRIPT_DIR, 'install.py')) as f:
+            source = f.read()
+
+        offenders = [
+            f"install.py:{lineno}"
+            for lineno, line in enumerate(source.splitlines(), 1)
+            if 'disable' in line and '--now' in line and not line.strip().startswith('#')
+        ]
+        self.assertEqual(
+            offenders, [],
+            "install.py must never stop or disable units: its checks are "
+            "network-dependent, so a transient failure would tear down working "
+            "sync. Report and skip instead. Found at: " + ", ".join(offenders))
+
+    def test_installer_explains_how_to_enable_manually(self):
+        with open(os.path.join(SCRIPT_DIR, 'install.py')) as f:
+            source = f.read()
+        self.assertIn(
+            'systemctl enable --now', source,
+            "when a profile is not activated the installer should tell the user "
+            "how to enable it themselves")
+
+
+class TestMountUnitLifecycle(unittest.TestCase):
+    """A clean `systemctl stop` was being recorded as a unit failure."""
+
+    UNIT = os.path.join(SCRIPT_DIR, 'services', 'rclone-mount@.service')
+
+    def setUp(self):
+        if not os.path.isfile(self.UNIT):
+            self.skipTest("rclone-mount@.service not present")
+        with open(self.UNIT) as f:
+            self.text = f.read()
+
+    def test_sigterm_exit_is_treated_as_success(self):
+        """rclone execs in the foreground, so SIGTERM yields 143 (128+15).
+
+        Without SuccessExitStatus every normal stop leaves the unit red, which
+        made healthy mounts show up under "Failed Personal Services".
+        """
+        self.assertIn(
+            'SuccessExitStatus=', self.text,
+            "rclone exits 143 on a clean SIGTERM; without SuccessExitStatus "
+            "systemd records every ordinary stop as a failure")
+        line = next(l for l in self.text.splitlines()
+                    if l.startswith('SuccessExitStatus='))
+        self.assertTrue(
+            '143' in line or 'SIGTERM' in line,
+            f"SuccessExitStatus should cover the SIGTERM exit; got: {line}")
+
+    def test_stale_mount_is_cleaned_up(self):
+        self.assertIn(
+            'ExecStopPost=', self.text,
+            "a crashed rclone leaves a stale FUSE mountpoint that blocks the "
+            "next mount; clear it on stop")
+
+    def test_unmount_mode_exists_in_runner(self):
+        runner = os.path.join(SCRIPT_DIR, 'services', 'rclone-mount.sh')
+        with open(runner) as f:
+            self.assertIn('--unmount', f.read(),
+                          "the unit's ExecStopPost calls rclone-mount.sh --unmount")
+
+    def test_unmount_mode_is_a_noop_when_nothing_is_mounted(self):
+        """ExecStopPost runs on every stop, so the common case must exit 0."""
+        runner = os.path.join(SCRIPT_DIR, 'services', 'rclone-mount.sh')
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles = os.path.join(tmp, '.config', 'rclone-sync-profiles')
+            os.makedirs(profiles)
+            target = os.path.join(tmp, 'not-a-mount')
+            os.makedirs(target)
+            with open(os.path.join(profiles, 'p.conf'), 'w') as f:
+                f.write(f'REMOTE="r"\nREMOTE_PATH=""\n'
+                        f'LOCAL_PATH="{target}"\nSYNC_TYPE="mount"\n')
+
+            res = run_bash(runner, '--unmount', 'p', env={'HOME': tmp})
+            self.assertEqual(res.returncode, 0,
+                             f"--unmount must succeed when idle: {res.stderr}")
+
+    def test_unmount_rejects_missing_profile_argument(self):
+        runner = os.path.join(SCRIPT_DIR, 'services', 'rclone-mount.sh')
+        res = run_bash(runner)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("Usage:", res.stderr)
+
+
+class TestSystemctlParsing(unittest.TestCase):
+    """systemctl marks units needing attention with a bullet, which was being
+    parsed as the unit name -- yielding phantom entries in the listing."""
+
+    def test_unit_name_extraction_survives_status_bullet(self):
+        script = os.path.join(SCRIPT_DIR, 'distros', 'arch', 'services_scripts.sh')
+        if not os.path.isfile(script):
+            script = os.path.join(SCRIPT_DIR, 'distros', 'common',
+                                  'services_scripts.sh')
+        if not os.path.isfile(script):
+            self.skipTest("services_scripts.sh not found")
+
+        with open(script) as f:
+            body = f.read()
+        self.assertIn('lsm_unit_names', body,
+                      "unit-name extraction should go through the shared filter")
+
+        # Exercise the filter itself against output that carries the marker.
+        harness = textwrap.dedent("""\
+            lsm_unit_names() {
+                awk '{
+                    for (i = 1; i <= NF; i++) {
+                        if ($i ~ /\\.(service|timer|socket|mount|target|path)$/) {
+                            print $i
+                            break
+                        }
+                    }
+                }'
+            }
+            printf '\\u25cf rclone-mount@a.service loaded failed failed X\\n  rclone-mount@b.service loaded active running X\\n' \\
+                | lsm_unit_names
+        """)
+        res = subprocess.run([BASH, '-c', harness], capture_output=True, text=True)
+        self.assertEqual(
+            res.stdout.split(),
+            ['rclone-mount@a.service', 'rclone-mount@b.service'],
+            f"bullet-prefixed lines mis-parsed; got: {res.stdout!r}")
+
+    def test_no_bare_awk_first_field_on_systemctl_output(self):
+        import re
+        pattern = re.compile(r"systemctl list-unit[^|\n]*\|\s*awk\s*'\{print \$1\}'")
+        offenders = []
+        for root, dirs, files in os.walk(os.path.join(SCRIPT_DIR, 'distros')):
+            dirs[:] = [d for d in dirs if d != '__pycache__']
+            for name in files:
+                if not name.endswith('.sh'):
+                    continue
+                path = os.path.join(root, name)
+                with open(path, encoding='utf-8', errors='replace') as f:
+                    for lineno, line in enumerate(f, 1):
+                        if pattern.search(line):
+                            offenders.append(
+                                f"{os.path.relpath(path, SCRIPT_DIR)}:{lineno}")
+        self.assertEqual(
+            offenders, [],
+            "systemctl prefixes lines with a status marker, so $1 is not always "
+            "the unit name. Found at: " + ", ".join(offenders))
+
+
 class TestPathResolution(unittest.TestCase):
     """No script may assume home directories live under /home/<user>."""
 
