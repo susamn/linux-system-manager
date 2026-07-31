@@ -38,14 +38,28 @@ lsm_unit_names() {
     }'
 }
 
-# Collect personal unit files once, NUL-safe, so paths containing spaces survive.
 collect_personal_units() {
-    if [[ ! -d "$SERVICES_DIR" ]]; then
-        return 0
+    local seen=()
+    if command -v systemctl &>/dev/null; then
+        while read -r u; do
+            if [[ -n "$u" && "$u" != "personal-services.target" ]]; then
+                printf '%s\0' "$u"
+                seen+=("$u")
+            fi
+        done < <(systemctl list-dependencies personal-services.target --plain --no-legend 2>/dev/null | lsm_unit_names || true)
     fi
-    find "$SERVICES_DIR" -maxdepth 1 -type f \
-         \( -name '*.service' -o -name '*.timer' \) -print0 2>/dev/null
+
+    if [[ -d "$SERVICES_DIR" ]]; then
+        while IFS= read -r -d '' file; do
+            local name
+            name=$(basename "$file")
+            if [[ " ${seen[*]:-} " != *" ${name} "* ]]; then
+                printf '%s\0' "$name"
+            fi
+        done < <(find "$SERVICES_DIR" -maxdepth 1 -type f \( -name '*.service' -o -name '*.timer' \) -print0 2>/dev/null)
+    fi
 }
+
 
 case "$action" in
     --active)

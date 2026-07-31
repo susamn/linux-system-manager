@@ -7,4 +7,4 @@ Persistent=true
 Unit=rclone-sync@%i.service
 
 [Install]
-WantedBy=timers.target
+WantedBy=timers.target personal-services.target
