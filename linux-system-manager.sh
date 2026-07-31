@@ -2,50 +2,94 @@
 import os
 import sys
 import json
+import time
 import subprocess
 
-# --- Colors ---
-RED = '\033[0;31m'
-YELLOW = '\033[1;33m'
-GREEN = '\033[0;32m'
-BLUE = '\033[0;34m'
-CYAN = '\033[0;36m'
-MAGENTA = '\033[0;35m'
-NC = '\033[0m'
+# --- TUI Styling & Palette (TUI-Creator Standard) ---
+CLEAR = '\033[H\033[2J'
+BOLD = '\033[1m'
+DIM = '\033[2m'
+ITALIC = '\033[3m'
+UNDERLINE = '\033[4m'
+
+# Semantic Color Roles
+PRIMARY = '\033[38;5;39m'   # Cyan Blue
+SUCCESS = '\033[38;5;82m'   # Vivid Green
+WARNING = '\033[38;5;214m'  # Amber / Orange
+DANGER = '\033[38;5;196m'   # Bright Red
+INFO = '\033[38;5;75m'      # Soft Blue
+ACCENT = '\033[38;5;171m'   # Vibrant Purple / Magenta
+NC = '\033[0m'              # Reset
+
+BRAILLE_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+DRY_RUN = False
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Injectable so distro detection can be exercised against a fixture instead of
-# whatever host the tests happen to run on.
 OS_RELEASE_PATH = os.environ.get('OS_RELEASE_PATH', '/etc/os-release')
+
+SECTION_ICONS = {
+    "1": "🛡️ ",
+    "2": "📦",
+    "3": "🔍",
+    "4": "⚙️ ",
+    "5": "⚡",
+    "6": "📊",
+    "7": "🔧",
+    "8": "💾",
+}
 
 
 def clear_screen():
-    os.system('clear')
+    sys.stdout.write(CLEAR)
+    sys.stdout.flush()
 
-def print_header(title):
-    print(f"{CYAN}╔══════════════════════════════════════════════════════════════╗{NC}")
-    print(f"{CYAN}║                                                              ║{NC}")
-    # Center the title in the header block
-    padding = (60 - len(title)) // 2
-    extra = (60 - len(title)) % 2
-    print(f"{CYAN}║{' ' * padding}{MAGENTA}{title}{CYAN}{' ' * (padding + extra)}║{NC}")
-    print(f"{CYAN}║                                                              ║{NC}")
-    print(f"{CYAN}╚══════════════════════════════════════════════════════════════╝{NC}")
+
+def spinner_animation(message: str, duration: float = 0.25):
+    """Renders a smooth cross-platform Braille loading spinner."""
+    if not sys.stdout.isatty():
+        return
+    end_time = time.time() + duration
+    idx = 0
+    while time.time() < end_time:
+        frame = BRAILLE_SPINNER[idx % len(BRAILLE_SPINNER)]
+        sys.stdout.write(f"\r  {PRIMARY}{frame}{NC} {DIM}{message}{NC}   ")
+        sys.stdout.flush()
+        time.sleep(0.05)
+        idx += 1
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
+
+
+def print_header(title: str):
+    width = 62
+    padded_title = f" {title} "
+    total_padding = width - len(padded_title) - 2
+    left_pad = total_padding // 2
+    right_pad = total_padding - left_pad
+
+    border_top = f"╭{'─' * (width - 2)}╮"
+    border_mid = f"│{' ' * left_pad}{BOLD}{ACCENT}{padded_title}{NC}{' ' * right_pad}│"
+    border_bot = f"╰{'─' * (width - 2)}╯"
+
+    print(f"{PRIMARY}{border_top}{NC}")
+    print(f"{PRIMARY}{border_mid}{NC}")
+    print(f"{PRIMARY}{border_bot}{NC}")
     print()
 
-def print_section_header(title):
+
+def print_section_header(title: str):
     clear_screen()
     print_header(title)
 
+
 def pause():
     print()
-    input("Press ENTER to continue...")
+    input(f"{DIM}Press ENTER to continue...{NC}")
+
 
 def detect_distro():
     if not os.path.exists(OS_RELEASE_PATH):
-        raise FileNotFoundError(
-            f"Could not find {OS_RELEASE_PATH} to detect distro.")
+        raise FileNotFoundError(f"Could not find {OS_RELEASE_PATH} to detect distro.")
 
     info = {}
     with open(OS_RELEASE_PATH) as f:
@@ -53,126 +97,140 @@ def detect_distro():
             if '=' in line:
                 k, v = line.strip().split('=', 1)
                 info[k] = v.strip('"')
-                
+
     distro_id = info.get('ID')
-    # Try ID first
     if distro_id and os.path.isdir(os.path.join(SCRIPT_DIR, 'distros', distro_id)):
         return distro_id, info.get('NAME', distro_id)
-        
-    # Try ID_LIKE fallbacks
+
     for like in info.get('ID_LIKE', '').split():
         if os.path.isdir(os.path.join(SCRIPT_DIR, 'distros', like)):
             return like, info.get('NAME', like)
-            
+
     return None, info.get('NAME', 'Unknown')
 
-def load_menu(distro_id):
+
+def load_menu(distro_id: str):
     menu_path = os.path.join(SCRIPT_DIR, 'distros', distro_id, 'menu.json')
     if not os.path.exists(menu_path):
         raise FileNotFoundError(f"Menu capabilities file not found at {menu_path}")
-        
+
     with open(menu_path) as f:
         return json.load(f)
 
-def render_menu(menu_data, distro_name):
+
+def render_menu(menu_data: dict, distro_name: str):
     clear_screen()
-    print_header(f"{distro_name} System Manager")
-    
+    print_header(f"🖥️  {distro_name} System Manager")
+
     sections = menu_data.get("sections", [])
-    
-    # Store flat mapping for quick action triggers: e.g. "1a" -> item dict
     action_map = {}
-    
+
+    if DRY_RUN:
+        print(f"  {WARNING}[DRY-RUN INSPECTION ACTIVE]{NC}\n")
+
     for section in sections:
-        sec_id = section.get("id")
+        sec_id = str(section.get("id"))
         sec_title = section.get("title")
-        print(f"{GREEN}{sec_id}{NC})   {BLUE}⚙️  {sec_title}{NC}")
-        
+        icon = SECTION_ICONS.get(sec_id, "⚙️ ")
+        print(f"{SUCCESS}{sec_id}{NC})   {INFO}{icon} {BOLD}{sec_title}{NC}")
+
         items = section.get("items", [])
         for item in items:
-            key = item.get("key")
+            key = str(item.get("key"))
             label = item.get("label")
             action_code = f"{sec_id}{key}"
             action_map[action_code.lower()] = item
-            print(f"      {MAGENTA}{key}{NC})  {YELLOW}{label}{NC}")
+            print(f"      {ACCENT}{key}{NC})  {WARNING}{label}{NC}")
         print()
-        
-    print(f"{RED}0{NC})   Exit")
+
+    print(f"  {DANGER}0{NC})   Exit")
+    print(f"  {DIM}d{NC})   Toggle Dry-Run Mode {'(ON)' if DRY_RUN else '(OFF)'}")
     print()
     return action_map
 
-def run_action(distro_id, item):
+
+def run_action(distro_id: str, item: dict):
     label = item.get("label")
     exec_file = item.get("exec")
     args = item.get("args", [])
-    
+
     print_section_header(label)
-    
-    # Resolve script path
+
     script_path = os.path.join(SCRIPT_DIR, 'distros', distro_id, exec_file)
     if not os.path.exists(script_path):
-        print(f"{RED}✗ Executable script not found: {script_path}{NC}")
+        print(f"{DANGER}✗ Executable script not found: {script_path}{NC}")
         pause()
         return
-        
-    # Check if executable, make it executable if not
+
     if not os.access(script_path, os.X_OK):
         try:
             os.chmod(script_path, 0o755)
         except Exception as e:
-            print(f"{YELLOW}⚠ Warning: Could not set executable permissions: {e}{NC}")
-            
-    print(f"{BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{NC}")
-    print(f"{YELLOW}Running: {label}{NC}")
-    print(f"{BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{NC}")
+            print(f"{WARNING}⚠ Warning: Could not set executable permissions: {e}{NC}")
+
+    print(f"{PRIMARY}──────────────────────────────────────────────────────────────{NC}")
+    print(f"{WARNING}Target Task:{NC} {BOLD}{label}{NC}")
+    print(f"{DIM}Script Path:{NC} {script_path}")
+    if args:
+        print(f"{DIM}Arguments:{NC}   {' '.join(args)}")
+    print(f"{PRIMARY}──────────────────────────────────────────────────────────────{NC}")
     print()
-    
+
+    if DRY_RUN:
+        print(f"{WARNING}ℹ DRY-RUN MODE: Command inspection only. No changes executed.{NC}")
+        print(f"  {PRIMARY}Command:{NC} {script_path} {' '.join(args)}")
+        pause()
+        return
+
+    spinner_animation(f"Launching {label}...")
+
     try:
-        # Run process inheriting stdin/stdout/stderr for interactive support
         result = subprocess.run([script_path] + args, cwd=os.path.join(SCRIPT_DIR, 'distros', distro_id))
         print()
         if result.returncode == 0:
-            print(f"{GREEN}✓ Completed successfully{NC}")
+            print(f"{SUCCESS}✓ Task completed successfully.{NC}")
         else:
-            print(f"{RED}✗ Command exited with code: {result.returncode}{NC}")
+            print(f"{DANGER}✗ Command exited with code: {result.returncode}{NC}")
     except Exception as e:
-        print(f"{RED}✗ Execution failed: {e}{NC}")
-        
+        print(f"{DANGER}✗ Execution failed: {e}{NC}")
+
     pause()
 
+
 def main():
+    global DRY_RUN
     try:
         distro_id, distro_name = detect_distro()
         if not distro_id:
-            print(f"{RED}Error: Distro '{distro_name}' is not supported yet.{NC}")
-            print(f"To add support, refer to the distro-manager skill under:")
-            print(f"  sys-manager/SKILL.md")
+            print(f"{DANGER}Error: Distro '{distro_name}' is not supported yet.{NC}")
             sys.exit(1)
-            
+
         menu_data = load_menu(distro_id)
-        
+
         while True:
             action_map = render_menu(menu_data, distro_name)
-            choice = input(f"{CYAN}Select option (e.g., 1a, 21, 0):{NC} ").strip().lower()
-            
+            choice = input(f"{PRIMARY}Select option (e.g. 1a, 21, d, 0):{NC} ").strip().lower()
+
             if choice == '0':
-                print()
-                print(f"{GREEN}Goodbye!{NC}")
-                print()
+                print(f"\n{SUCCESS}Goodbye!{NC}\n")
                 break
-                
-            if choice in action_map:
+            elif choice == 'd':
+                DRY_RUN = not DRY_RUN
+                status_str = "ENABLED" if DRY_RUN else "DISABLED"
+                spinner_animation(f"Dry-run mode {status_str}")
+            elif choice in action_map:
                 run_action(distro_id, action_map[choice])
             else:
-                print(f"{RED}Invalid option. Please try again.{NC}")
-                subprocess.run(["sleep", "1"])
-                
+                print(f"{DANGER}Invalid option. Please try again.{NC}")
+                time.sleep(0.8)
+
     except KeyboardInterrupt:
-        print(f"\n{GREEN}Goodbye!{NC}\n")
+        print(f"\n{SUCCESS}Goodbye!{NC}\n")
         sys.exit(0)
     except Exception as e:
-        print(f"{RED}Error starting System Manager: {e}{NC}")
+        print(f"{DANGER}Error starting System Manager: {e}{NC}")
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()
