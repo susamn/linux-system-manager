@@ -190,7 +190,9 @@ if [[ -n "$installed_kernel" ]]; then
     echo ""
 else
     # Check for other kernel variants (linux-lts, linux-zen, etc.)
-    local any_kernel=$(pacman -Q 2>/dev/null | grep '^linux ' | head -1 | awk '{print $1":"$2}' || echo "")
+    # Not `local`: this is top-level code, and `local` outside a function is a
+    # runtime error that aborts the script under `set -e`.
+    any_kernel=$(pacman -Q 2>/dev/null | grep '^linux ' | head -1 | awk '{print $1":"$2}' || echo "")
     if [[ -n "$any_kernel" ]]; then
         echo -e "${CYAN}═══ Kernel Status ═══${NC}"
         echo "  Running: $current_kernel"

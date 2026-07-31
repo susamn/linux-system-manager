@@ -15,7 +15,7 @@ A distro-agnostic, configuration-driven CLI system manager and package operation
 linux-system-manager/
 ├── linux-system-manager.sh      # Main menu runner (distro-agnostic)
 ├── install.py                   # Service and hooks installer (distro-agnostic)
-├── test_sys_manager.py          # Unit test suite
+├── test_*.py                    # Unit, contract, and regression suites
 ├── SKILL.md                     # Local maintainer & developer guide
 ├── services/                    # Custom systemd services source directory
 └── distros/                     # Distro-specific configuration modules
@@ -40,9 +40,20 @@ To start the interactive CLI menu:
 ```
 
 ### 3. Running Tests
-To verify project integrity:
+To run the full suite:
 ```bash
-python3 test_sys_manager.py
+python3 -m unittest discover -s . -p 'test_*.py' -v
+```
+
+| Suite | Covers |
+|---|---|
+| `test_sys_manager.py` | Distro detection, menu loading/rendering, action dispatch, installer |
+| `test_menu_config.py` | Every `menu.json`: schema, unique action codes, and that each `exec` resolves |
+| `test_regressions.py` | Bugs that actually shipped — each verified to fail against the pre-fix code |
+
+Shell scripts are linted separately in CI. To reproduce locally:
+```bash
+shellcheck --severity=warning --exclude=SC2155 distros/*/*.sh services/*.sh
 ```
 
 ## Extending to New Distros

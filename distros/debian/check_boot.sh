@@ -338,7 +338,7 @@ check_dpkg_hooks() {
 
     if [[ -n "$hook_failures" ]]; then
         log_error "Recent dpkg failures or errors detected:"
-        echo "$failures" | sed 's/^/  /'
+        echo "$hook_failures" | sed 's/^/  /'
         return 1
     else
         log_success "No recent dpkg failures detected"
